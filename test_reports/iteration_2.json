@@ -1,0 +1,46 @@
+{
+  "summary": "Phase 2 backend regression + new-feature suite — 38/38 pytest tests passing. Covers auth (login/register/me/logout/refresh/brute-force), RBAC (admin/manager/user/viewer), INVOICE template, bulk upload + BackgroundTasks → EXTRACTED, server-side pagination + regex search, OCR digital path on the real quotation PDF, manual INVOICE create + PDF, Resend 503 when not configured, admin user mgmt, self-demote/delete guards, and audit log. Fixed one bug in server.py — upload/create routes leaked MongoDB ObjectId in the response causing 500 on /documents/upload and /documents/create.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Brute-force lockout identifier uses `request.client.host + email`. Behind the Kubernetes ingress the app is served by multiple backend pods; each pod sees a different proxy-chain IP as request.client.host, so the 5-failure counter is partitioned per-pod and users can submit 5*N wrong attempts before any single pod locks them. First 6 sequential wrong logins returned 401x6; lockout only triggers once one pod alone has accumulated 5 fails (observed after ~10–15 attempts in testing). Fix: key on email (plus X-Forwarded-For) instead of request.client.host, or move counter to a shared TTL document keyed by email only."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_procureflow_phase2.py",
+    "/app/test_reports/pytest/phase2_results.xml"
+  ],
+  "action_items": [
+    "Harden brute-force lockout so it works behind a multi-replica ingress (key by email and/or X-Forwarded-For)."
+  ],
+  "critical_code_review_comments": [
+    "server.py: `_save_upload` and `create_manual_document` called `db.documents.insert_one(stored)` and then returned `stored` — Motor mutates the dict to attach `_id` (ObjectId), which is not JSON-serializable and was causing 500 on /api/documents/upload and /api/documents/create. Fixed by popping _id after insert.",
+    "server.py line 184: `__import__('datetime').timedelta(...)` is an awkward import dodge — `datetime.timedelta` is already usable because `datetime` the module was imported at top; please use the normal form.",
+    "server.py:633 uses deprecated `@app.on_event('startup')` / `shutdown` — migrate to FastAPI lifespan context to avoid future-deprecation warnings.",
+    "CORS config: with `allow_credentials=True` a single origin is used (FRONTEND_URL), which is correct; however the fallback `CORS_ORIGINS='*'` would be invalid when credentials are enabled. Consider asserting FRONTEND_URL is set in production.",
+    "Login route stores `login_attempts.locked_until` as an ISO string and compares with aware-datetime. Fine today but more robust to store as real BSON datetime so TTL indexes can auto-expire stale lockouts.",
+    "auth_service.py set_auth_cookies uses samesite='none'; secure=True — good for cross-origin preview. Ensure production also serves on HTTPS (it does)."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (fix: strip _id after insert_one in upload + manual create)",
+    "/app/backend/tests/test_procureflow_phase2.py (new pytest suite)"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "not tested (scope: backend only)"
+  },
+  "test_credentials": "Admin syazwan.zulkifli@quatriz.com.my / Admin@123 — verified working. Additional viewer/user/manager test accounts are created+torn-down per session via POST /api/auth/register and PUT /api/admin/users/{id}/role.",
+  "seed_data_creation": "No persistent seed. Fixtures upload/delete docs and register/delete users within each run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run `pytest /app/backend/tests/test_procureflow_phase2.py -v` — suite uses REACT_APP_BACKEND_URL from /app/frontend/.env, pulls the real sample quotation PDF, and validates every Phase 2 capability. If RESEND_API_KEY gets populated in .env the test_email_without_resend_returns_503 test will start failing — swap to asserting 200/OK in that case. Brute-force lockout test tolerates multi-pod LB by trying up to 25 wrong attempts.",
+  "rca of the issue": "Upload/create 500s were caused by returning the dict that Motor's insert_one mutated with a raw ObjectId `_id`. FastAPI/Pydantic cannot serialize ObjectId, so response serialization raised `TypeError: ObjectId object is not iterable` → 500. Reproduction: POST /api/documents/upload with valid PDF + admin Bearer token. Mitigation applied: `stored.pop('_id', None)` right after insert_one in both _save_upload and create_manual_document."
+}

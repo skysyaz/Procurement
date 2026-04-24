@@ -115,6 +115,36 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
             "tax_rate": 0,
         },
     },
+    "INVOICE": {
+        "document_type": "INVOICE",
+        "label": "Invoice",
+        "schema": {
+            "header_fields": [
+                {"key": "invoice_number", "label": "Invoice Number", "type": "text", "required": True},
+                {"key": "invoice_date", "label": "Invoice Date", "type": "date", "required": True},
+                {"key": "due_date", "label": "Due Date", "type": "date"},
+                {"key": "vendor_name", "label": "Vendor / Biller", "type": "text", "required": True},
+                {"key": "vendor_address", "label": "Vendor Address", "type": "textarea"},
+                {"key": "client_name", "label": "Bill To", "type": "text", "required": True},
+                {"key": "client_address", "label": "Bill To Address", "type": "textarea"},
+                {"key": "po_reference", "label": "PO Reference", "type": "text"},
+                {"key": "payment_terms", "label": "Payment Terms", "type": "text"},
+                {"key": "issued_by", "label": "Issued By", "type": "text"},
+            ],
+            "item_columns": [
+                {"key": "description", "label": "Description", "type": "textarea"},
+                {"key": "quantity", "label": "Qty", "type": "number"},
+                {"key": "unit_price", "label": "Unit Price", "type": "number"},
+                {"key": "amount", "label": "Amount", "type": "number", "computed": "quantity*unit_price"},
+            ],
+            "totals": [
+                {"key": "subtotal", "label": "Subtotal"},
+                {"key": "tax", "label": "SST (8%)"},
+                {"key": "grand_total", "label": "Grand Total"},
+            ],
+            "tax_rate": 0.08,
+        },
+    },
 }
 
 

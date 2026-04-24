@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { api, fileUrl } from "../lib/api";
 import DocumentForm from "../components/DocumentForm";
+import EmailDialog from "../components/EmailDialog";
 import StatusBadge, { TypeBadge } from "../components/Badges";
-import { FloppyDisk, FileArrowDown, ArrowLeft, CheckCircle } from "@phosphor-icons/react";
+import { useAuth, can } from "../lib/auth";
+import { FloppyDisk, FileArrowDown, ArrowLeft, CheckCircle, PaperPlaneTilt } from "@phosphor-icons/react";
 
 const TYPES = ["PO", "PR", "DO", "QUOTATION", "INVOICE", "OTHER"];
 
@@ -15,6 +17,8 @@ export default function Review() {
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState(null);
   const [typeOverride, setTypeOverride] = useState("");
+  const [showEmail, setShowEmail] = useState(false);
+  const { user } = useAuth();
   const nav = useNavigate();
 
   const loadAll = async (docType) => {
@@ -96,12 +100,21 @@ export default function Review() {
           <a href={genPdf} target="_blank" rel="noreferrer" className="pf-btn pf-btn-secondary" data-testid="review-download-pdf">
             <FileArrowDown size={14} /> Generated PDF
           </a>
-          <button className="pf-btn pf-btn-secondary" disabled={saving} onClick={() => save("REVIEWED")} data-testid="review-save-btn">
-            <FloppyDisk size={14} /> {saving ? "Saving…" : "Save draft"}
-          </button>
-          <button className="pf-btn pf-btn-primary" disabled={saving} onClick={() => save("FINAL")} data-testid="review-finalize-btn">
-            <CheckCircle size={14} weight="bold" /> Finalize
-          </button>
+          {can(user, "manager") && (
+            <button className="pf-btn pf-btn-secondary" onClick={() => setShowEmail(true)} data-testid="review-email-btn">
+              <PaperPlaneTilt size={14} /> Email
+            </button>
+          )}
+          {can(user, "user") && (
+            <button className="pf-btn pf-btn-secondary" disabled={saving} onClick={() => save("REVIEWED")} data-testid="review-save-btn">
+              <FloppyDisk size={14} /> {saving ? "Saving…" : "Save draft"}
+            </button>
+          )}
+          {can(user, "manager") && (
+            <button className="pf-btn pf-btn-primary" disabled={saving} onClick={() => save("FINAL")} data-testid="review-finalize-btn">
+              <CheckCircle size={14} weight="bold" /> Finalize
+            </button>
+          )}
         </div>
       </div>
       {savedAt && <div className="px-8 py-1 text-[11px] text-[#047857] bg-[#ECFDF5] border-b border-[#D1FAE5]">Saved at {savedAt}</div>}
@@ -133,6 +146,7 @@ export default function Review() {
           )}
         </div>
       </div>
+      {showEmail && <EmailDialog docId={id} onClose={() => setShowEmail(false)} />}
     </div>
   );
 }

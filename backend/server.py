@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,20 +10,32 @@ from typing import Any, Dict, List, Optional
 
 import aiofiles
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, Response
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env")
+
+from fastapi import (
+    APIRouter, BackgroundTasks, Depends, FastAPI, File, HTTPException,
+    Query, Request, Response, UploadFile,
+)
+from fastapi.responses import FileResponse, JSONResponse, Response as FastResponse
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
 
+from services.audit_service import write_log
+from services.auth_service import (
+    ROLES, clear_auth_cookies, create_access_token, create_refresh_token,
+    decode, make_auth_deps, new_user_doc, public_user, set_auth_cookies,
+    verify_password,
+)
 from services.classification_service import classify
+from services.email_service import is_configured as email_configured, send_pdf_email
 from services.extraction_service import extract_structured
 from services.ocr_service import extract_text_from_pdf
 from services.pdf_service import render_document_pdf
 from services.templates import get_template, list_templates
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env")
 
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -37,29 +50,40 @@ api_router = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger("procureflow")
 
+auth_deps = make_auth_deps(db)
+get_current_user = auth_deps["get_current_user"]
+require_min_role = auth_deps["require_min_role"]
+require_roles = auth_deps["require_roles"]
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DOC_STATUSES = ["UPLOADED", "PROCESSING", "EXTRACTED", "REVIEWED", "FINAL", "MANUAL_DRAFT", "FAILED"]
+DOC_TYPES = ["PO", "PR", "DO", "QUOTATION", "INVOICE", "OTHER"]
+DOC_SOURCES = ["AUTO", "MANUAL"]
+
 
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
 
-DOC_STATUSES = ["UPLOADED", "PROCESSING", "EXTRACTED", "REVIEWED", "FINAL", "MANUAL_DRAFT"]
-DOC_TYPES = ["PO", "PR", "DO", "QUOTATION", "INVOICE", "OTHER"]
-DOC_SOURCES = ["AUTO", "MANUAL"]
-
-
 class DocumentModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
-
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     type: str = "OTHER"
     status: str = "UPLOADED"
-    source: str = "AUTO"  # AUTO (uploaded) or MANUAL (template)
+    source: str = "AUTO"
     filename: Optional[str] = None
-    file_url: Optional[str] = None  # relative `/api/documents/{id}/file`
+    file_url: Optional[str] = None
     raw_text: Optional[str] = ""
     confidence_score: float = 0.0
     classification_method: Optional[str] = None
+    ocr_method: Optional[str] = None
     extracted_data: Dict[str, Any] = Field(default_factory=dict)
+    owner_id: Optional[str] = None
+    owner_email: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -75,6 +99,28 @@ class CreateDocumentPayload(BaseModel):
     data: Dict[str, Any]
 
 
+class RegisterPayload(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8)
+    name: str = Field(min_length=1)
+
+
+class LoginPayload(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class EmailPayload(BaseModel):
+    to: EmailStr
+    cc: Optional[EmailStr] = None
+    subject: Optional[str] = None
+    message: Optional[str] = None
+
+
+class UserRoleUpdate(BaseModel):
+    role: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -87,27 +133,174 @@ def _serialize(doc: Dict[str, Any]) -> Dict[str, Any]:
     return doc
 
 
-def _deserialize(doc: Dict[str, Any]) -> Dict[str, Any]:
-    for k in ("created_at", "updated_at"):
-        v = doc.get(k)
-        if isinstance(v, str):
-            try:
-                doc[k] = datetime.fromisoformat(v)
-            except ValueError:
-                pass
-    return doc
+# ---------------------------------------------------------------------------
+# Auth routes
+# ---------------------------------------------------------------------------
+
+@api_router.post("/auth/register")
+async def register(payload: RegisterPayload, response: Response, request: Request):
+    email = payload.email.lower().strip()
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    # First ever user becomes admin; otherwise default to `user`
+    count = await db.users.count_documents({})
+    role = "admin" if count == 0 else "user"
+    doc = new_user_doc(email=email, password=payload.password, name=payload.name, role=role)
+    await db.users.insert_one(doc)
+
+    access = create_access_token(doc["id"], doc["email"], doc["role"])
+    refresh = create_refresh_token(doc["id"])
+    set_auth_cookies(response, access, refresh)
+
+    await write_log(
+        db, actor_id=doc["id"], actor_email=doc["email"], actor_role=doc["role"],
+        action="USER_REGISTER", target_type="user", target_id=doc["id"],
+    )
+    return {"user": public_user(doc), "access_token": access}
+
+
+@api_router.post("/auth/login")
+async def login(payload: LoginPayload, response: Response, request: Request):
+    email = payload.email.lower().strip()
+    client_ip = request.client.host if request.client else "unknown"
+    identifier = f"{client_ip}:{email}"
+
+    # Brute force check
+    rec = await db.login_attempts.find_one({"identifier": identifier})
+    if rec and rec.get("locked_until"):
+        locked_until = rec["locked_until"]
+        if isinstance(locked_until, str):
+            locked_until = datetime.fromisoformat(locked_until)
+        if locked_until > datetime.now(timezone.utc):
+            raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+
+    user = await db.users.find_one({"email": email})
+    if not user or not verify_password(payload.password, user["password_hash"]):
+        attempts = (rec or {}).get("count", 0) + 1
+        update: Dict[str, Any] = {"count": attempts, "identifier": identifier, "updated_at": datetime.now(timezone.utc).isoformat()}
+        if attempts >= 5:
+            update["locked_until"] = (datetime.now(timezone.utc) + __import__("datetime").timedelta(minutes=15)).isoformat()
+        await db.login_attempts.update_one({"identifier": identifier}, {"$set": update}, upsert=True)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    await db.login_attempts.delete_one({"identifier": identifier})
+
+    access = create_access_token(user["id"], user["email"], user["role"])
+    refresh = create_refresh_token(user["id"])
+    set_auth_cookies(response, access, refresh)
+
+    await write_log(
+        db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+        action="USER_LOGIN", target_type="user", target_id=user["id"],
+    )
+    return {"user": public_user(user), "access_token": access}
+
+
+@api_router.post("/auth/logout")
+async def logout(response: Response, user: dict = Depends(get_current_user)):
+    clear_auth_cookies(response)
+    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+                    action="USER_LOGOUT", target_type="user", target_id=user["id"])
+    return {"ok": True}
+
+
+@api_router.get("/auth/me")
+async def me(user: dict = Depends(get_current_user)):
+    return public_user(user)
+
+
+@api_router.post("/auth/refresh")
+async def refresh(request: Request, response: Response):
+    token = request.cookies.get("refresh_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="No refresh token")
+    try:
+        payload = decode(token)
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        user = await db.users.find_one({"id": payload["sub"]})
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        access = create_access_token(user["id"], user["email"], user["role"])
+        new_refresh = create_refresh_token(user["id"])
+        set_auth_cookies(response, access, new_refresh)
+        return {"access_token": access}
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# Admin: user management + audit log
+# ---------------------------------------------------------------------------
+
+@api_router.get("/admin/users")
+async def list_users(_: dict = Depends(require_roles("admin"))):
+    cursor = db.users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", -1)
+    return [u async for u in cursor]
+
+
+@api_router.put("/admin/users/{user_id}/role")
+async def change_user_role(user_id: str, payload: UserRoleUpdate, actor: dict = Depends(require_roles("admin"))):
+    if payload.role not in ROLES:
+        raise HTTPException(status_code=400, detail=f"role must be one of {ROLES}")
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target["id"] == actor["id"] and payload.role != "admin":
+        raise HTTPException(status_code=400, detail="You cannot demote yourself")
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"role": payload.role, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await write_log(
+        db, actor_id=actor["id"], actor_email=actor["email"], actor_role=actor["role"],
+        action="USER_ROLE_CHANGE", target_type="user", target_id=user_id,
+        meta={"new_role": payload.role, "old_role": target["role"]},
+    )
+    return {"ok": True}
+
+
+@api_router.delete("/admin/users/{user_id}")
+async def delete_user(user_id: str, actor: dict = Depends(require_roles("admin"))):
+    if user_id == actor["id"]:
+        raise HTTPException(status_code=400, detail="You cannot delete yourself")
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.users.delete_one({"id": user_id})
+    await write_log(
+        db, actor_id=actor["id"], actor_email=actor["email"], actor_role=actor["role"],
+        action="USER_DELETE", target_type="user", target_id=user_id, meta={"email": target["email"]},
+    )
+    return {"ok": True}
+
+
+@api_router.get("/audit-logs")
+async def get_audit_logs(
+    limit: int = Query(100, ge=1, le=500),
+    action: Optional[str] = None,
+    actor_email: Optional[str] = None,
+    _: dict = Depends(require_roles("admin")),
+):
+    q: Dict[str, Any] = {}
+    if action:
+        q["action"] = action
+    if actor_email:
+        q["actor_email"] = actor_email.lower().strip()
+    cursor = db.audit_logs.find(q, {"_id": 0}).sort("created_at", -1).limit(limit)
+    return [log async for log in cursor]
+
+
+# ---------------------------------------------------------------------------
+# Public(ish) routes
 # ---------------------------------------------------------------------------
 
 @api_router.get("/")
 async def root():
-    return {"message": "ProcureFlow API", "version": "1.0"}
+    return {"message": "ProcureFlow API", "version": "1.1", "email_configured": email_configured()}
 
-
-# ---- Templates -----------------------------------------------------------
 
 @api_router.get("/templates")
 async def get_templates():
@@ -122,130 +315,223 @@ async def get_one_template(doc_type: str):
     return tpl
 
 
-# ---- Dashboard -----------------------------------------------------------
-
 @api_router.get("/dashboard/stats")
-async def dashboard_stats():
-    total = await db.documents.count_documents({})
+async def dashboard_stats(user: dict = Depends(get_current_user)):
+    scope: Dict[str, Any] = {} if user["role"] in {"admin", "manager"} else {"owner_id": user["id"]}
+    total = await db.documents.count_documents(scope)
     by_type: Dict[str, int] = {}
     by_status: Dict[str, int] = {}
     for t in DOC_TYPES:
-        by_type[t] = await db.documents.count_documents({"type": t})
+        by_type[t] = await db.documents.count_documents({**scope, "type": t})
     for s in DOC_STATUSES:
-        by_status[s] = await db.documents.count_documents({"status": s})
+        by_status[s] = await db.documents.count_documents({**scope, "status": s})
 
-    recent_cursor = db.documents.find({}, {"_id": 0, "raw_text": 0, "extracted_data": 0}).sort("created_at", -1).limit(5)
+    recent_cursor = db.documents.find(
+        scope, {"_id": 0, "raw_text": 0, "extracted_data": 0},
+    ).sort("created_at", -1).limit(5)
     recent = [_serialize(d) async for d in recent_cursor]
 
     return {"total": total, "by_type": by_type, "by_status": by_status, "recent": recent}
 
 
-# ---- Document upload / list / get ---------------------------------------
+# ---------------------------------------------------------------------------
+# Document upload / process
+# ---------------------------------------------------------------------------
 
-@api_router.post("/documents/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def _save_upload(file: UploadFile, owner: dict) -> Dict[str, Any]:
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
-
     doc_id = str(uuid.uuid4())
     dest = UPLOAD_DIR / f"{doc_id}.pdf"
     async with aiofiles.open(dest, "wb") as out:
         while chunk := await file.read(1024 * 1024):
             await out.write(chunk)
-
     doc = DocumentModel(
-        id=doc_id,
-        filename=file.filename,
-        file_url=f"/api/documents/{doc_id}/file",
-        status="UPLOADED",
-        source="AUTO",
+        id=doc_id, filename=file.filename, file_url=f"/api/documents/{doc_id}/file",
+        status="UPLOADED", source="AUTO",
+        owner_id=owner["id"], owner_email=owner["email"],
     )
-    payload = _serialize(doc.model_dump())
-    await db.documents.insert_one(payload)
-    return doc.model_dump()
+    stored = _serialize(doc.model_dump())
+    await db.documents.insert_one(stored)
+    stored.pop("_id", None)
+    return stored
+
+
+async def _run_pipeline(doc_id: str) -> None:
+    """Synchronous pipeline runner used by both sync & background processing."""
+    file_path = UPLOAD_DIR / f"{doc_id}.pdf"
+    if not file_path.exists():
+        await db.documents.update_one({"id": doc_id}, {"$set": {"status": "FAILED"}})
+        return
+    try:
+        await db.documents.update_one({"id": doc_id}, {"$set": {"status": "PROCESSING"}})
+        raw_text, ocr_method = extract_text_from_pdf(file_path)
+        doc_type, confidence, method = await classify(raw_text)
+        extracted = await extract_structured(doc_type, raw_text)
+        now = datetime.now(timezone.utc).isoformat()
+        await db.documents.update_one(
+            {"id": doc_id},
+            {"$set": {
+                "raw_text": raw_text,
+                "type": doc_type,
+                "confidence_score": confidence,
+                "classification_method": method,
+                "ocr_method": ocr_method,
+                "extracted_data": extracted,
+                "status": "EXTRACTED",
+                "updated_at": now,
+            }},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Pipeline failed for %s: %s", doc_id, exc)
+        await db.documents.update_one({"id": doc_id}, {"$set": {"status": "FAILED"}})
+
+
+@api_router.post("/documents/upload")
+async def upload_document(file: UploadFile = File(...), user: dict = Depends(require_min_role("user"))):
+    saved = await _save_upload(file, user)
+    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+                    action="DOC_UPLOAD", target_type="document", target_id=saved["id"],
+                    meta={"filename": saved["filename"]})
+    return saved
 
 
 @api_router.post("/documents/{doc_id}/process")
-async def process_document(doc_id: str):
+async def process_document(doc_id: str, user: dict = Depends(require_min_role("user"))):
     existing = await db.documents.find_one({"id": doc_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Document not found")
+    await _run_pipeline(doc_id)
+    updated = await db.documents.find_one({"id": doc_id}, {"_id": 0})
+    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+                    action="DOC_PROCESS", target_type="document", target_id=doc_id,
+                    meta={"type": updated.get("type"), "ocr": updated.get("ocr_method")})
+    return _serialize(updated)
 
-    file_path = UPLOAD_DIR / f"{doc_id}.pdf"
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File missing on storage")
 
-    await db.documents.update_one({"id": doc_id}, {"$set": {"status": "PROCESSING"}})
+@api_router.post("/documents/bulk-upload")
+async def bulk_upload(
+    bg: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    user: dict = Depends(require_min_role("user")),
+):
+    if len(files) > 20:
+        raise HTTPException(status_code=400, detail="Max 20 files per bulk upload")
+    results = []
+    for f in files:
+        try:
+            saved = await _save_upload(f, user)
+            bg.add_task(_run_pipeline, saved["id"])
+            results.append({"id": saved["id"], "filename": saved["filename"], "queued": True})
+        except HTTPException as e:
+            results.append({"filename": f.filename, "queued": False, "error": e.detail})
 
-    raw_text = extract_text_from_pdf(file_path)
-    doc_type, confidence, method = await classify(raw_text)
-    extracted = await extract_structured(doc_type, raw_text)
+    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+                    action="DOC_BULK_UPLOAD", target_type="document",
+                    meta={"count": len(results)})
+    return {"queued": sum(1 for r in results if r.get("queued")), "items": results}
 
-    now = datetime.now(timezone.utc).isoformat()
-    updates = {
-        "raw_text": raw_text,
-        "type": doc_type,
-        "confidence_score": confidence,
-        "classification_method": method,
-        "extracted_data": extracted,
-        "status": "EXTRACTED",
-        "updated_at": now,
-    }
-    await db.documents.update_one({"id": doc_id}, {"$set": updates})
-    merged = {**existing, **updates}
-    return _deserialize(merged)
 
+@api_router.get("/documents/bulk-status")
+async def bulk_status(ids: str, user: dict = Depends(get_current_user)):
+    id_list = [x for x in ids.split(",") if x]
+    scope = {"id": {"$in": id_list}}
+    if user["role"] not in {"admin", "manager"}:
+        scope["owner_id"] = user["id"]
+    cursor = db.documents.find(scope, {"_id": 0, "id": 1, "status": 1, "type": 1, "filename": 1})
+    return [d async for d in cursor]
+
+
+# ---------------------------------------------------------------------------
+# Document list / get / review / create / pdf / email / delete
+# ---------------------------------------------------------------------------
 
 @api_router.get("/documents")
 async def list_documents(
-    type: Optional[str] = Query(None),
-    status: Optional[str] = Query(None),
-    source: Optional[str] = Query(None),
+    type: Optional[str] = None,
+    status: Optional[str] = None,
+    source: Optional[str] = None,
+    q: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=200),
+    user: dict = Depends(get_current_user),
 ):
-    q: Dict[str, Any] = {}
-    if type:
-        q["type"] = type.upper()
-    if status:
-        q["status"] = status.upper()
-    if source:
-        q["source"] = source.upper()
+    query: Dict[str, Any] = {}
+    if type and type.upper() != "ALL":
+        query["type"] = type.upper()
+    if status and status.upper() != "ALL":
+        query["status"] = status.upper()
+    if source and source.upper() != "ALL":
+        query["source"] = source.upper()
+    if user["role"] not in {"admin", "manager"}:
+        query["owner_id"] = user["id"]
 
-    cursor = db.documents.find(q, {"_id": 0, "raw_text": 0}).sort("created_at", -1).limit(500)
-    return [_serialize(d) async for d in cursor]
+    if q:
+        safe = re.escape(q)
+        query["$or"] = [
+            {"filename": {"$regex": safe, "$options": "i"}},
+            {"extracted_data.header.vendor_name": {"$regex": safe, "$options": "i"}},
+            {"extracted_data.header.client_name": {"$regex": safe, "$options": "i"}},
+            {"extracted_data.header.po_number": {"$regex": safe, "$options": "i"}},
+            {"extracted_data.header.quotation_number": {"$regex": safe, "$options": "i"}},
+            {"extracted_data.header.reference_number": {"$regex": safe, "$options": "i"}},
+            {"extracted_data.header.request_number": {"$regex": safe, "$options": "i"}},
+            {"extracted_data.header.delivery_number": {"$regex": safe, "$options": "i"}},
+            {"extracted_data.header.invoice_number": {"$regex": safe, "$options": "i"}},
+            {"extracted_data.header.title": {"$regex": safe, "$options": "i"}},
+        ]
+
+    total = await db.documents.count_documents(query)
+    skip = (page - 1) * page_size
+    cursor = (
+        db.documents.find(query, {"_id": 0, "raw_text": 0})
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(page_size)
+    )
+    items = [_serialize(d) async for d in cursor]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
-@api_router.get("/documents/{doc_id}")
-async def get_document(doc_id: str):
+async def _get_doc_checked(doc_id: str, user: dict) -> Dict[str, Any]:
     doc = await db.documents.find_one({"id": doc_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+    if user["role"] not in {"admin", "manager"} and doc.get("owner_id") not in (user["id"], None):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return doc
+
+
+@api_router.get("/documents/{doc_id}")
+async def get_document(doc_id: str, user: dict = Depends(get_current_user)):
+    doc = await _get_doc_checked(doc_id, user)
     return _serialize(doc)
 
 
 @api_router.put("/documents/{doc_id}/review")
-async def review_document(doc_id: str, payload: ReviewPayload):
-    existing = await db.documents.find_one({"id": doc_id}, {"_id": 0})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Document not found")
-
+async def review_document(doc_id: str, payload: ReviewPayload, user: dict = Depends(require_min_role("user"))):
+    existing = await _get_doc_checked(doc_id, user)
+    if payload.status == "FINAL" and user["role"] not in {"admin", "manager"}:
+        raise HTTPException(status_code=403, detail="Only manager/admin can finalize")
     updates: Dict[str, Any] = {
         "extracted_data": payload.extracted_data,
-        "status": payload.status or "REVIEWED",
+        "status": (payload.status or "REVIEWED").upper(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     if payload.type:
         updates["type"] = payload.type.upper()
-
     await db.documents.update_one({"id": doc_id}, {"$set": updates})
+
+    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+                    action="DOC_REVIEW", target_type="document", target_id=doc_id,
+                    meta={"status": updates["status"]})
     merged = {**existing, **updates}
     return _serialize(merged)
 
 
 @api_router.delete("/documents/{doc_id}")
-async def delete_document(doc_id: str):
-    existing = await db.documents.find_one({"id": doc_id}, {"_id": 0})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Document not found")
+async def delete_document(doc_id: str, user: dict = Depends(require_min_role("user"))):
+    existing = await _get_doc_checked(doc_id, user)
     file_path = UPLOAD_DIR / f"{doc_id}.pdf"
     if file_path.exists():
         try:
@@ -253,30 +539,34 @@ async def delete_document(doc_id: str):
         except OSError:
             pass
     await db.documents.delete_one({"id": doc_id})
+    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+                    action="DOC_DELETE", target_type="document", target_id=doc_id,
+                    meta={"filename": existing.get("filename")})
     return {"deleted": doc_id}
 
 
 @api_router.post("/documents/create")
-async def create_manual_document(payload: CreateDocumentPayload):
+async def create_manual_document(payload: CreateDocumentPayload, user: dict = Depends(require_min_role("user"))):
     tpl = get_template(payload.type)
     if not tpl:
         raise HTTPException(status_code=400, detail="Unknown document type")
-
     doc = DocumentModel(
-        type=payload.type.upper(),
-        status="MANUAL_DRAFT",
-        source="MANUAL",
-        extracted_data=payload.data,
-        confidence_score=1.0,
-        classification_method="manual",
+        type=payload.type.upper(), status="MANUAL_DRAFT", source="MANUAL",
+        extracted_data=payload.data, confidence_score=1.0, classification_method="manual",
+        owner_id=user["id"], owner_email=user["email"],
     )
     stored = _serialize(doc.model_dump())
     await db.documents.insert_one(stored)
+    stored.pop("_id", None)
+    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+                    action="DOC_CREATE_MANUAL", target_type="document", target_id=doc.id,
+                    meta={"type": doc.type})
     return doc.model_dump()
 
 
 @api_router.get("/documents/{doc_id}/file")
-async def get_document_file(doc_id: str):
+async def get_document_file(doc_id: str, user: dict = Depends(get_current_user)):
+    await _get_doc_checked(doc_id, user)
     file_path = UPLOAD_DIR / f"{doc_id}.pdf"
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -284,32 +574,110 @@ async def get_document_file(doc_id: str):
 
 
 @api_router.get("/documents/{doc_id}/pdf")
-async def generate_document_pdf(doc_id: str):
-    doc = await db.documents.find_one({"id": doc_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+async def generate_document_pdf(doc_id: str, user: dict = Depends(get_current_user)):
+    doc = await _get_doc_checked(doc_id, user)
     try:
         pdf_bytes = render_document_pdf(doc.get("type", "OTHER"), doc.get("extracted_data") or {})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return Response(
+    return FastResponse(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{doc.get("type", "document")}-{doc_id}.pdf"'},
     )
 
 
+@api_router.post("/documents/{doc_id}/email")
+async def email_document(doc_id: str, payload: EmailPayload, user: dict = Depends(require_min_role("manager"))):
+    doc = await _get_doc_checked(doc_id, user)
+    if not email_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Email not configured. Set RESEND_API_KEY and RESEND_FROM_EMAIL in backend .env, then restart.",
+        )
+    try:
+        pdf_bytes = render_document_pdf(doc.get("type", "OTHER"), doc.get("extracted_data") or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    header = (doc.get("extracted_data") or {}).get("header", {})
+    ref = (
+        header.get("quotation_number") or header.get("po_number")
+        or header.get("invoice_number") or header.get("request_number")
+        or header.get("delivery_number") or doc_id[:8]
+    )
+    default_subject = f"{doc.get('type', 'Document')} {ref}"
+
+    try:
+        result = send_pdf_email(
+            to=payload.to, cc=payload.cc,
+            subject=payload.subject or default_subject,
+            message=payload.message or f"Please find attached {doc.get('type', 'document')} {ref}.",
+            pdf_bytes=pdf_bytes,
+            filename=f"{doc.get('type', 'document')}-{ref}.pdf",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Email send failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Email provider error: {exc}")
+
+    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+                    action="DOC_EMAIL", target_type="document", target_id=doc_id,
+                    meta={"to": payload.to, "ref": ref})
+    return {"ok": True, "provider_response": result}
+
+
 # ---------------------------------------------------------------------------
-app.include_router(api_router)
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Startup: indexes + admin seed
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def on_startup():
+    await db.users.create_index("email", unique=True)
+    await db.users.create_index("id", unique=True)
+    await db.documents.create_index("id", unique=True)
+    await db.documents.create_index("created_at")
+    await db.documents.create_index("owner_id")
+    await db.login_attempts.create_index("identifier", unique=True)
+    await db.audit_logs.create_index("created_at")
+
+    # Seed admin
+    admin_email = os.environ.get("ADMIN_EMAIL", "").lower().strip()
+    admin_password = os.environ.get("ADMIN_PASSWORD")
+    admin_name = os.environ.get("ADMIN_NAME", "Admin")
+    if admin_email and admin_password:
+        existing = await db.users.find_one({"email": admin_email})
+        if not existing:
+            await db.users.insert_one(new_user_doc(admin_email, admin_password, admin_name, "admin"))
+            logger.info("Seeded admin user %s", admin_email)
+        elif not verify_password(admin_password, existing.get("password_hash", "")):
+            from services.auth_service import hash_password
+            await db.users.update_one(
+                {"email": admin_email},
+                {"$set": {"password_hash": hash_password(admin_password), "role": "admin"}},
+            )
+            logger.info("Updated admin password for %s", admin_email)
 
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+
+# ---------------------------------------------------------------------------
+# Middleware & routes
+# ---------------------------------------------------------------------------
+
+app.include_router(api_router)
+
+frontend_url = os.environ.get("FRONTEND_URL", "")
+cors_origins = [frontend_url] if frontend_url else os.environ.get("CORS_ORIGINS", "*").split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)

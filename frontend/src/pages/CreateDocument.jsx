@@ -4,7 +4,7 @@ import { api } from "../lib/api";
 import DocumentForm from "../components/DocumentForm";
 import { FloppyDisk, FileArrowDown } from "@phosphor-icons/react";
 
-const TYPES = ["QUOTATION", "PO", "PR", "DO"];
+const TYPES = ["QUOTATION", "PO", "PR", "DO", "INVOICE"];
 
 export default function CreateDocument() {
   const [type, setType] = useState("QUOTATION");
