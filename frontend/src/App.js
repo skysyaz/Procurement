@@ -11,13 +11,16 @@ import Templates from "./pages/Templates";
 import Review from "./pages/Review";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 import AdminUsers from "./pages/AdminUsers";
+import AdminTemplates from "./pages/AdminTemplates";
 import AuditLog from "./pages/AuditLog";
 
 function Shell({ children }) {
   const location = useLocation();
   const { user } = useAuth();
-  const isAuthRoute = ["/login", "/register"].includes(location.pathname);
+  const isAuthRoute = ["/login", "/register", "/forgot-password", "/reset-password"].includes(location.pathname);
   const isReview = location.pathname.startsWith("/review/");
 
   if (isAuthRoute) return children;
@@ -47,6 +50,8 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<AuthRedirectIfLoggedIn><Login /></AuthRedirectIfLoggedIn>} />
             <Route path="/register" element={<AuthRedirectIfLoggedIn><Register /></AuthRedirectIfLoggedIn>} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
 
             <Route path="/" element={<Protected><Dashboard /></Protected>} />
             <Route path="/upload" element={<Protected minRole="user"><UploadPage /></Protected>} />
@@ -56,6 +61,7 @@ export default function App() {
             <Route path="/review/:id" element={<Protected><Review /></Protected>} />
 
             <Route path="/admin/users" element={<Protected minRole="admin"><AdminUsers /></Protected>} />
+            <Route path="/admin/templates" element={<Protected minRole="admin"><AdminTemplates /></Protected>} />
             <Route path="/admin/audit" element={<Protected minRole="admin"><AuditLog /></Protected>} />
           </Routes>
         </Shell>

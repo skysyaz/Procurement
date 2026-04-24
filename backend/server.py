@@ -26,15 +26,23 @@ from starlette.middleware.cors import CORSMiddleware
 from services.audit_service import write_log
 from services.auth_service import (
     ROLES, clear_auth_cookies, create_access_token, create_refresh_token,
-    decode, make_auth_deps, new_user_doc, public_user, set_auth_cookies,
-    verify_password,
+    decode, hash_password, make_auth_deps, new_user_doc, public_user,
+    set_auth_cookies, verify_password,
 )
 from services.classification_service import classify
-from services.email_service import is_configured as email_configured, send_pdf_email
+from services.email_service import (
+    is_configured as email_configured,
+    send_password_reset_email,
+    send_pdf_email,
+)
 from services.extraction_service import extract_structured
 from services.ocr_service import extract_text_from_pdf
 from services.pdf_service import render_document_pdf
-from services.templates import get_template, list_templates
+from services.templates import (
+    DEFAULT_TEMPLATES, get_template, is_builtin, list_templates,
+    remove_runtime_template, set_runtime_templates, upsert_runtime_template,
+    validate_schema,
+)
 
 
 UPLOAD_DIR = ROOT_DIR / "uploads"
@@ -119,6 +127,23 @@ class EmailPayload(BaseModel):
 
 class UserRoleUpdate(BaseModel):
     role: str
+
+
+class ForgotPasswordPayload(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordPayload(BaseModel):
+    token: str
+    password: str = Field(min_length=8)
+
+
+class TemplatePayload(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    document_type: str
+    label: str
+    schema: Dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +267,76 @@ async def refresh(request: Request, response: Response):
 
 
 # ---------------------------------------------------------------------------
+# Password reset
+# ---------------------------------------------------------------------------
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordPayload):
+    """Always returns 200 so attackers can't enumerate emails."""
+    import secrets
+    from datetime import timedelta
+
+    email = payload.email.lower().strip()
+    user = await db.users.find_one({"email": email})
+    if user:
+        token = secrets.token_urlsafe(32)
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        await db.password_reset_tokens.insert_one({
+            "token": token,
+            "user_id": user["id"],
+            "email": email,
+            "expires_at": expires_at,
+            "used": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        frontend_url = os.environ.get("FRONTEND_URL", "").rstrip("/")
+        reset_url = f"{frontend_url}/reset-password?token={token}"
+        if email_configured():
+            try:
+                send_password_reset_email(email, reset_url)
+                logger.info("Sent password reset to %s", email)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to send reset email: %s", exc)
+        else:
+            logger.warning("RESEND_API_KEY missing — reset link for %s: %s", email, reset_url)
+
+        await write_log(
+            db, actor_id=user["id"], actor_email=email, actor_role=user["role"],
+            action="PASSWORD_RESET_REQUESTED", target_type="user", target_id=user["id"],
+            meta={"email_sent": email_configured()},
+        )
+    return {"ok": True}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(payload: ResetPasswordPayload):
+    rec = await db.password_reset_tokens.find_one({"token": payload.token})
+    if not rec or rec.get("used"):
+        raise HTTPException(status_code=400, detail="Invalid or already-used token")
+    expires_at = rec.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Token expired")
+
+    await db.users.update_one(
+        {"id": rec["user_id"]},
+        {"$set": {"password_hash": hash_password(payload.password),
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await db.password_reset_tokens.update_one(
+        {"token": payload.token},
+        {"$set": {"used": True, "used_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await db.login_attempts.delete_one({"identifier": rec["email"]})
+    await write_log(
+        db, actor_id=rec["user_id"], actor_email=rec["email"], actor_role=None,
+        action="PASSWORD_RESET_COMPLETED", target_type="user", target_id=rec["user_id"],
+    )
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Admin: user management + audit log
 # ---------------------------------------------------------------------------
 
@@ -301,6 +396,63 @@ async def get_audit_logs(
         q["actor_email"] = actor_email.lower().strip()
     cursor = db.audit_logs.find(q, {"_id": 0}).sort("created_at", -1).limit(limit)
     return [log async for log in cursor]
+
+
+# ---------------------------------------------------------------------------
+# Admin: template editor
+# ---------------------------------------------------------------------------
+
+async def _refresh_templates_from_db() -> None:
+    cursor = db.document_templates.find({}, {"_id": 0})
+    overrides = {doc["document_type"]: doc async for doc in cursor}
+    set_runtime_templates(overrides)
+
+
+@api_router.post("/admin/templates")
+async def create_template(payload: TemplatePayload, actor: dict = Depends(require_roles("admin"))):
+    dtype = payload.document_type.upper().strip()
+    if not re.fullmatch(r"[A-Z0-9_]{2,32}", dtype):
+        raise HTTPException(status_code=400, detail="document_type must be 2-32 chars [A-Z0-9_]")
+    err = validate_schema(payload.schema)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    tpl = {"document_type": dtype, "label": payload.label.strip() or dtype, "schema": payload.schema}
+    await db.document_templates.update_one({"document_type": dtype}, {"$set": tpl}, upsert=True)
+    upsert_runtime_template(tpl)
+
+    await write_log(db, actor_id=actor["id"], actor_email=actor["email"], actor_role=actor["role"],
+                    action="TEMPLATE_UPSERT", target_type="template", target_id=dtype,
+                    meta={"label": tpl["label"]})
+    return tpl
+
+
+@api_router.put("/admin/templates/{doc_type}")
+async def update_template(doc_type: str, payload: TemplatePayload, actor: dict = Depends(require_roles("admin"))):
+    if payload.document_type.upper() != doc_type.upper():
+        raise HTTPException(status_code=400, detail="document_type in body must match URL")
+    return await create_template(payload, actor)
+
+
+@api_router.delete("/admin/templates/{doc_type}")
+async def delete_template(doc_type: str, actor: dict = Depends(require_roles("admin"))):
+    dtype = doc_type.upper()
+    if is_builtin(dtype):
+        # Built-ins can't be removed — only reset: delete the override to fall back.
+        result = await db.document_templates.delete_one({"document_type": dtype})
+        remove_runtime_template(dtype)
+        # Put the factory default back on disk so list endpoint shows it unchanged
+        await write_log(db, actor_id=actor["id"], actor_email=actor["email"], actor_role=actor["role"],
+                        action="TEMPLATE_RESET", target_type="template", target_id=dtype)
+        return {"reset": True, "found_override": result.deleted_count > 0}
+
+    result = await db.document_templates.delete_one({"document_type": dtype})
+    remove_runtime_template(dtype)
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Template not found")
+    await write_log(db, actor_id=actor["id"], actor_email=actor["email"], actor_role=actor["role"],
+                    action="TEMPLATE_DELETE", target_type="template", target_id=dtype)
+    return {"deleted": dtype}
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +571,31 @@ async def process_document(doc_id: str, user: dict = Depends(require_min_role("u
     return _serialize(updated)
 
 
+def _use_celery() -> bool:
+    if os.environ.get("USE_CELERY", "true").lower() not in {"1", "true", "yes"}:
+        return False
+    try:
+        import redis as _redis
+        r = _redis.Redis.from_url(os.environ.get("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0"))
+        r.ping()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _enqueue_pipeline(bg: BackgroundTasks, doc_id: str) -> str:
+    """Enqueue the OCR pipeline on Celery when available; else in-process."""
+    if _use_celery():
+        try:
+            from celery_app import process_document_task
+            process_document_task.delay(doc_id)
+            return "celery"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Celery enqueue failed (%s); falling back to BackgroundTasks", exc)
+    bg.add_task(_run_pipeline, doc_id)
+    return "background_task"
+
+
 @api_router.post("/documents/bulk-upload")
 async def bulk_upload(
     bg: BackgroundTasks,
@@ -428,18 +605,41 @@ async def bulk_upload(
     if len(files) > 20:
         raise HTTPException(status_code=400, detail="Max 20 files per bulk upload")
     results = []
+    runner = "background_task"
     for f in files:
         try:
             saved = await _save_upload(f, user)
-            bg.add_task(_run_pipeline, saved["id"])
+            runner = _enqueue_pipeline(bg, saved["id"])
             results.append({"id": saved["id"], "filename": saved["filename"], "queued": True})
         except HTTPException as e:
             results.append({"filename": f.filename, "queued": False, "error": e.detail})
 
     await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
                     action="DOC_BULK_UPLOAD", target_type="document",
-                    meta={"count": len(results)})
-    return {"queued": sum(1 for r in results if r.get("queued")), "items": results}
+                    meta={"count": len(results), "runner": runner})
+    return {"queued": sum(1 for r in results if r.get("queued")), "runner": runner, "items": results}
+
+
+@api_router.get("/admin/queue-status")
+async def queue_status(_: dict = Depends(require_roles("admin"))):
+    using_celery = _use_celery()
+    depth = 0
+    if using_celery:
+        try:
+            import redis as _redis
+            r = _redis.Redis.from_url(os.environ.get("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0"))
+            depth = r.llen("procureflow") or 0
+        except Exception:  # noqa: BLE001
+            pass
+    in_flight = await db.documents.count_documents({"status": "PROCESSING"})
+    failed = await db.documents.count_documents({"status": "FAILED"})
+    return {
+        "celery_available": using_celery,
+        "runner": "celery" if using_celery else "background_task",
+        "pending_in_redis": depth,
+        "in_flight": in_flight,
+        "failed": failed,
+    }
 
 
 @api_router.get("/documents/bulk-status")
@@ -651,6 +851,11 @@ async def on_startup():
     await db.documents.create_index("owner_id")
     await db.login_attempts.create_index("identifier", unique=True)
     await db.audit_logs.create_index("created_at")
+    await db.password_reset_tokens.create_index("token", unique=True)
+    await db.document_templates.create_index("document_type", unique=True)
+
+    # Load admin-defined template overrides into the runtime overlay
+    await _refresh_templates_from_db()
 
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "").lower().strip()
@@ -662,7 +867,6 @@ async def on_startup():
             await db.users.insert_one(new_user_doc(admin_email, admin_password, admin_name, "admin"))
             logger.info("Seeded admin user %s", admin_email)
         elif not verify_password(admin_password, existing.get("password_hash", "")):
-            from services.auth_service import hash_password
             await db.users.update_one(
                 {"email": admin_email},
                 {"$set": {"password_hash": hash_password(admin_password), "role": "admin"}},

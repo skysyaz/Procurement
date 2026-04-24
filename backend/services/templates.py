@@ -1,10 +1,13 @@
-"""Document template definitions. Schemas drive dynamic form rendering and
-extraction prompts. Adding a new type is as simple as adding a new entry here.
+"""Document template definitions. Built-in defaults are kept in code; admins
+can override or add new types via the `document_templates` collection (see
+`server.py` admin endpoints and `load_effective_templates`).
 """
-from typing import Any, Dict, List
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
 
 
-TEMPLATES: Dict[str, Dict[str, Any]] = {
+DEFAULT_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "PO": {
         "document_type": "PO",
         "label": "Purchase Order",
@@ -149,8 +152,66 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
 
 
 def get_template(document_type: str) -> Dict[str, Any]:
-    return TEMPLATES.get(document_type.upper())
+    return _runtime_templates.get(document_type.upper()) or DEFAULT_TEMPLATES.get(document_type.upper())
 
 
 def list_templates() -> List[Dict[str, Any]]:
-    return list(TEMPLATES.values())
+    seen = set(_runtime_templates.keys()) | set(DEFAULT_TEMPLATES.keys())
+    out: List[Dict[str, Any]] = []
+    for key in seen:
+        tpl = _runtime_templates.get(key) or DEFAULT_TEMPLATES.get(key)
+        if tpl:
+            out.append(tpl)
+    out.sort(key=lambda t: t["document_type"])
+    return out
+
+
+# Runtime overlay — merged with defaults, refreshed from MongoDB at startup and
+# after every admin edit.
+_runtime_templates: Dict[str, Dict[str, Any]] = {}
+
+
+def set_runtime_templates(overrides: Dict[str, Dict[str, Any]]) -> None:
+    _runtime_templates.clear()
+    _runtime_templates.update({k.upper(): v for k, v in overrides.items()})
+
+
+def upsert_runtime_template(tpl: Dict[str, Any]) -> None:
+    _runtime_templates[tpl["document_type"].upper()] = tpl
+
+
+def remove_runtime_template(document_type: str) -> None:
+    _runtime_templates.pop(document_type.upper(), None)
+
+
+def is_builtin(document_type: str) -> bool:
+    return document_type.upper() in DEFAULT_TEMPLATES
+
+
+def validate_schema(schema: Dict[str, Any]) -> Optional[str]:
+    """Return an error message or None if the template schema is valid."""
+    if not isinstance(schema, dict):
+        return "schema must be an object"
+    for key in ("header_fields", "item_columns", "totals"):
+        if not isinstance(schema.get(key), list):
+            return f"schema.{key} must be an array"
+    allowed_types = {"text", "textarea", "number", "date"}
+    for f in schema["header_fields"]:
+        if not isinstance(f, dict) or not f.get("key") or not f.get("label"):
+            return "each header_field needs key + label"
+        if f.get("type", "text") not in allowed_types:
+            return f"unsupported header_field type: {f.get('type')}"
+    for c in schema["item_columns"]:
+        if not isinstance(c, dict) or not c.get("key") or not c.get("label"):
+            return "each item_column needs key + label"
+        if c.get("type", "text") not in allowed_types:
+            return f"unsupported item_column type: {c.get('type')}"
+    for t in schema["totals"]:
+        if not isinstance(t, dict) or not t.get("key") or not t.get("label"):
+            return "each total needs key + label"
+    tax = schema.get("tax_rate", 0)
+    try:
+        float(tax)
+    except (TypeError, ValueError):
+        return "tax_rate must be a number"
+    return None

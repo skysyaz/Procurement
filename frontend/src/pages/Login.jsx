@@ -74,6 +74,8 @@ export default function Login() {
 
           <div className="text-[12px] text-[#71717A] mt-6">
             No account? <Link to="/register" className="text-[#0F52BA] hover:underline" data-testid="link-register">Create one</Link>
+            <span className="mx-2 text-[#D4D4D8]">·</span>
+            <Link to="/forgot-password" className="text-[#0F52BA] hover:underline" data-testid="link-forgot">Forgot password?</Link>
           </div>
         </form>
       </div>

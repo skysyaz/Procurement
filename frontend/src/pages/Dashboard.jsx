@@ -1,16 +1,26 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { TypeBadge } from "../components/Badges";
 import StatusBadge from "../components/Badges";
 import { Link } from "react-router-dom";
-import { ArrowRight, FileText, UploadSimple, Plus } from "@phosphor-icons/react";
+import { ArrowRight, FileText, UploadSimple, Plus, Lightning } from "@phosphor-icons/react";
 
 const TYPES = ["PO", "PR", "DO", "QUOTATION", "INVOICE", "OTHER"];
 
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
+  const [queue, setQueue] = useState(null);
+  const { user } = useAuth();
 
   useEffect(() => { api.get("/dashboard/stats").then(r => setStats(r.data)); }, []);
+  useEffect(() => {
+    if (user?.role !== "admin") return;
+    const load = () => api.get("/admin/queue-status").then(r => setQueue(r.data)).catch(() => {});
+    load();
+    const iv = setInterval(load, 5000);
+    return () => clearInterval(iv);
+  }, [user]);
 
   return (
     <div className="p-10 pf-fade-up" data-testid="dashboard-page">
@@ -38,6 +48,31 @@ export default function Dashboard() {
         <StatCell label="In review" val={stats?.by_status?.PROCESSING ?? "—"} testid="stat-processing" />
         <StatCell label="Manual drafts" val={stats?.by_status?.MANUAL_DRAFT ?? "—"} testid="stat-manual" last />
       </div>
+
+      {queue && (
+        <div className="pf-surface mb-8 p-5 flex flex-wrap items-center gap-6" data-testid="queue-status">
+          <div className="flex items-center gap-2">
+            <Lightning size={16} weight="bold" color={queue.celery_available ? "#047857" : "#92400E"} />
+            <span className="pf-overline">Processing runner</span>
+            <span className="font-display text-[14px] font-semibold uppercase tracking-[0.1em]">
+              {queue.runner}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 text-[13px] text-[#52525B]">
+            <span className="pf-overline">In-flight</span>
+            <span className="tabular-nums font-medium text-[#0A0A0B]">{queue.in_flight}</span>
+          </div>
+          <div className="flex items-center gap-2 text-[13px] text-[#52525B]">
+            <span className="pf-overline">Pending in Redis</span>
+            <span className="tabular-nums font-medium text-[#0A0A0B]">{queue.pending_in_redis}</span>
+          </div>
+          <div className="flex items-center gap-2 text-[13px] text-[#52525B]">
+            <span className="pf-overline">Failed</span>
+            <span className={"tabular-nums font-medium " + (queue.failed ? "text-[#B91C1C]" : "text-[#0A0A0B]")}>{queue.failed}</span>
+          </div>
+          <div className="ml-auto text-[11px] text-[#A1A1AA]">auto-refresh · 5s</div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="pf-surface lg:col-span-2" data-testid="recent-list">
