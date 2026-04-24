@@ -415,9 +415,15 @@ async def _refresh_templates_from_db() -> None:
 
 @api_router.post("/admin/templates")
 async def create_template(payload: TemplatePayload, actor: dict = Depends(require_roles("admin"))):
-    dtype = payload.document_type.upper().strip()
-    if not re.fullmatch(r"[A-Z0-9_]{2,32}", dtype):
-        raise HTTPException(status_code=400, detail="document_type must be 2-32 chars [A-Z0-9_]")
+    # Reject lowercase/invalid raw input (don't silently upshift) so admins
+    # see immediate validation feedback instead of being surprised later.
+    raw_type = payload.document_type.strip()
+    if not re.fullmatch(r"[A-Z0-9_]{2,32}", raw_type):
+        raise HTTPException(
+            status_code=400,
+            detail="document_type must be 2-32 chars, uppercase letters, digits or underscores only",
+        )
+    dtype = raw_type
     err = validate_schema(payload.template_schema)
     if err:
         raise HTTPException(status_code=400, detail=err)
