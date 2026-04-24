@@ -1,0 +1,94 @@
+{
+  "theme": "Light",
+  "archetype": "Swiss & High-Contrast",
+  "domain": "B2B Procurement, SaaS Finance Tool",
+  "mood": "Authoritative, functional, data-dense, precise, efficient",
+  "colors": {
+    "background": "#F7F7F9",
+    "surface": "#FFFFFF",
+    "border": "#E5E7EB",
+    "text_primary": "#0A0A0B",
+    "text_secondary": "#52525B",
+    "primary": "#0F52BA",
+    "primary_hover": "#0C439E",
+    "status": {
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "error": "#EF4444",
+      "info": "#3B82F6"
+    }
+  },
+  "typography": {
+    "font_heading": "Cabinet Grotesk",
+    "font_body": "IBM Plex Sans",
+    "rules": [
+      "Use 'tabular-nums' class on all pricing, quantities, and numeric data to align decimal points vertically.",
+      "Headings should use 'tracking-tight' for a crisp, structural feel.",
+      "Do not use generic sans-serifs (Inter/Roboto/Open Sans) under any circumstances."
+    ],
+    "hierarchy": {
+      "h1": "text-4xl tracking-tight font-bold",
+      "h2": "text-2xl tracking-tight font-semibold",
+      "h3": "text-lg font-medium",
+      "body": "text-sm text-secondary",
+      "overline": "text-xs uppercase tracking-[0.2em] text-gray-500 font-medium"
+    }
+  },
+  "layout_spacing": {
+    "container": "w-full max-w-none mx-auto",
+    "dashboard_grid": "grid grid-cols-1 md:grid-cols-4 gap-4",
+    "split_view": "grid grid-cols-1 lg:grid-cols-2 h-screen overflow-hidden bg-white",
+    "panel_padding": "p-6 sm:p-8"
+  },
+  "surface_components": {
+    "strategy": "Grid Borders (The Technical Look). Focus on structure, lines, and data density over softness.",
+    "cards": "bg-white border border-gray-200 rounded-sm shadow-none overflow-hidden",
+    "buttons": "rounded-sm font-medium transition-colors px-4 py-2 text-sm",
+    "inputs": "bg-white border border-gray-300 rounded-sm focus:ring-1 focus:ring-primary focus:border-primary text-sm shadow-none",
+    "tables": "w-full text-left text-sm border-collapse",
+    "table_headers": "bg-gray-50 border-y border-gray-200 py-3 px-4 font-semibold text-xs uppercase tracking-wider text-gray-600",
+    "table_cells": "py-3 px-4 border-b border-gray-100 tabular-nums align-top"
+  },
+  "icons": {
+    "library": "@phosphor-icons/react",
+    "installation": "yarn add @phosphor-icons/react",
+    "style": "Regular weight for standard icons, bold for active states."
+  },
+  "media": {
+    "image_urls": {
+      "logo": {
+        "url": "https://images.unsplash.com/photo-1758186334264-d1ab8a079aa2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNDR8MHwxfHNlYXJjaHwxfHxtaW5pbWFsaXN0JTIwYWJzdHJhY3QlMjBsb2dvJTIwd2hpdGUlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc3NzA0MTI2M3ww&ixlib=rb-4.1.0&q=85",
+        "alt": "ProcureFlow Abstract Logo",
+        "usage": "Use in application header and login screen"
+      },
+      "avatar": {
+        "url": "https://images.unsplash.com/photo-1718783573640-c5b01c37bf58?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAxODF8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBjb3Jwb3JhdGUlMjBhdmF0YXIlMjBwcm9maWxlfGVufDB8fHx8MTc3NzA0MTI2NXww&ixlib=rb-4.1.0&q=85",
+        "alt": "User Profile Avatar",
+        "usage": "Use in header profile dropdown"
+      },
+      "empty_state_hero": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/a8fcdd69-bb22-4616-8f20-5e80bc8f8a91/images/467c164ca55513801e6426a88ffc1e3690d5e1d8973406b077be24cfd56e3353.png",
+        "alt": "Abstract geometric document processing graphic",
+        "usage": "Use for the upload drag-drop zone or 'no documents found' empty states"
+      }
+    }
+  },
+  "interactions": {
+    "hover": "hover:bg-gray-50 transition-colors duration-150",
+    "focus": "focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-1"
+  },
+  "testing": {
+    "data_testid_rule": "All interactive and key informational elements MUST include a data-testid attribute formatted as kebab-case role-based (e.g., data-testid='upload-pdf-button', data-testid='document-list-table')."
+  },
+  "instructions_to_main_agent": [
+    "Install and use @phosphor-icons/react for all iconography.",
+    "Implement the Document Review Page as a split-screen layout (`grid-cols-2`). The left side MUST house the PDF viewer, and the right side MUST house the extracted data form.",
+    "Data tables must be extremely dense with tight padding to allow maximum visibility on a single screen without scrolling.",
+    "Apply the `tabular-nums` class to any component rendering metrics, prices, and quantities to align decimal points vertically.",
+    "Implement Shadcn UI for standard inputs (Select, Calendar, Table) but strictly override their rounded corners to 'rounded-sm' and remove shadows to match the 'Technical Grid' vibe.",
+    "Do NOT use soft shadows for surface containers; rely purely on 1px solid borders (`border-border`) and background color contrasts.",
+    "Ensure the Form component for manual document creation (PO/PR/DO) supports dynamic arrays for line items (add/remove functionality) and auto-calculates totals at the bottom.",
+    "Apply `data-testid` attributes extensively across all components to ensure testability.",
+    "All forms and data entry components should follow standard accessible label practices."
+  ]
+}
