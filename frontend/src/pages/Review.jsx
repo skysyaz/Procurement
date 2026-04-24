@@ -71,26 +71,26 @@ export default function Review() {
 
   return (
     <div className="h-screen flex flex-col" data-testid="review-page">
-      <div className="flex items-center justify-between border-b border-[#E5E7EB] px-8 py-4 bg-white">
-        <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E7EB] px-4 sm:px-8 py-3 bg-white">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-4 min-w-0">
           <button className="pf-btn pf-btn-ghost" onClick={() => nav(-1)} data-testid="review-back">
             <ArrowLeft size={14} /> Back
           </button>
-          <div className="h-6 w-px bg-[#E5E7EB]" />
+          <div className="hidden sm:block h-6 w-px bg-[#E5E7EB]" />
           <TypeBadge type={doc.type} />
-          <div className="font-display text-[18px] font-semibold tracking-tight">
+          <div className="font-display text-[14px] sm:text-[18px] font-semibold tracking-tight truncate max-w-[160px] sm:max-w-none">
             {doc.filename || `${doc.type} draft`}
           </div>
           <StatusBadge status={doc.status} />
           {doc.confidence_score > 0 && (
-            <span className="text-[11px] text-[#71717A] tabular-nums">
+            <span className="hidden sm:inline text-[11px] text-[#71717A] tabular-nums">
               Confidence: {Math.round(doc.confidence_score * 100)}% · {doc.classification_method}
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <select
-            className="pf-input w-[150px]"
+            className="pf-input w-[120px] sm:w-[150px]"
             value={typeOverride}
             onChange={(e) => onTypeChange(e.target.value)}
             data-testid="review-type-select"
@@ -120,19 +120,36 @@ export default function Review() {
       {savedAt && <div className="px-8 py-1 text-[11px] text-[#047857] bg-[#ECFDF5] border-b border-[#D1FAE5]">Saved at {savedAt}</div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 flex-1 overflow-hidden">
-        <div className="bg-[#27272A] border-r border-[#E5E7EB] overflow-hidden" data-testid="pdf-viewer-panel">
+        <div className="hidden lg:block bg-[#27272A] border-r border-[#E5E7EB] overflow-hidden" data-testid="pdf-viewer-panel">
           {pdfSrc ? (
             <iframe src={pdfSrc} title="PDF" className="w-full h-full" />
           ) : (
             <div className="h-full flex items-center justify-center text-[#A1A1AA] text-sm p-8 text-center">
-              This is a manually-created document. <br /> Use “Generated PDF” to preview the rendered output.
+              This is a manually-created document. <br /> Use "Generated PDF" to preview the rendered output.
               <div className="mt-4">
                 <Link to="/create" className="pf-btn pf-btn-secondary">Create another</Link>
               </div>
             </div>
           )}
         </div>
-        <div className="overflow-y-auto bg-white p-8">
+
+        {/* Mobile PDF card — iframe PDF preview doesn't work reliably on mobile browsers */}
+        {pdfSrc && (
+          <div className="lg:hidden bg-[#FAFAFA] border-b border-[#E5E7EB] p-4 flex items-center gap-3" data-testid="pdf-mobile-card">
+            <div className="w-10 h-10 bg-[#0A0A0B] flex items-center justify-center shrink-0">
+              <FileArrowDown size={18} color="#fff" weight="bold" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[11px] uppercase tracking-[0.12em] text-[#71717A] font-medium">Original PDF</div>
+              <div className="text-[13px] font-medium truncate">{doc.filename || "document.pdf"}</div>
+            </div>
+            <a href={pdfSrc} target="_blank" rel="noreferrer" className="pf-btn pf-btn-secondary" data-testid="pdf-mobile-open">
+              Open
+            </a>
+          </div>
+        )}
+
+        <div className="overflow-y-auto bg-white p-4 sm:p-8">
           {template ? (
             <DocumentForm template={template} value={value} onChange={setValue} />
           ) : (
