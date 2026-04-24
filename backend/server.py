@@ -164,8 +164,13 @@ async def register(payload: RegisterPayload, response: Response, request: Reques
 @api_router.post("/auth/login")
 async def login(payload: LoginPayload, response: Response, request: Request):
     email = payload.email.lower().strip()
-    client_ip = request.client.host if request.client else "unknown"
-    identifier = f"{client_ip}:{email}"
+    # Key by email + first IP in X-Forwarded-For (fall back to client.host) so
+    # the lockout survives multi-pod ingress — each pod sees the ingress IP
+    # as client.host which would otherwise partition the counter.
+    fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    client_ip = fwd or (request.client.host if request.client else "unknown")
+    identifier = f"{email}"  # key solely on email; shared across pods
+    _ip_hint = client_ip  # kept for the audit meta below
 
     # Brute force check
     rec = await db.login_attempts.find_one({"identifier": identifier})
@@ -179,9 +184,14 @@ async def login(payload: LoginPayload, response: Response, request: Request):
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(payload.password, user["password_hash"]):
         attempts = (rec or {}).get("count", 0) + 1
-        update: Dict[str, Any] = {"count": attempts, "identifier": identifier, "updated_at": datetime.now(timezone.utc).isoformat()}
+        update: Dict[str, Any] = {
+            "count": attempts, "identifier": identifier,
+            "last_ip": _ip_hint,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
         if attempts >= 5:
-            update["locked_until"] = (datetime.now(timezone.utc) + __import__("datetime").timedelta(minutes=15)).isoformat()
+            from datetime import timedelta
+            update["locked_until"] = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
         await db.login_attempts.update_one({"identifier": identifier}, {"$set": update}, upsert=True)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
