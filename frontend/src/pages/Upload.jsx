@@ -122,10 +122,15 @@ function BulkUpload() {
         setQueued((cur) => cur.map((q) => r.data.find((x) => x.id === q.id) || q));
         const allDone = r.data.every((x) => x.status === "EXTRACTED" || x.status === "FAILED");
         if (allDone) setPolling(false);
-      } catch { /* ignore */ }
+      } catch (err) {
+        console.warn("Bulk status poll failed:", err?.message || err);
+      }
     }, 2000);
     return () => clearInterval(iv);
-  }, [polling, queued]);
+    // Only re-run when polling flips on/off or the queued id-set changes — not
+    // on every status update, which would cause an infinite re-subscribe loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [polling, queued.map((q) => q.id).join(",")]);
 
   return (
     <div className="pf-surface p-8" data-testid="bulk-dropzone">

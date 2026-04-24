@@ -23,7 +23,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
 
-from services.audit_service import write_log
+from services.audit_service import AuditEvent, log_from_user, write_log
 from services.auth_service import (
     ROLES, clear_auth_cookies, create_access_token, create_refresh_token,
     decode, hash_password, make_auth_deps, new_user_doc, public_user,
@@ -139,11 +139,11 @@ class ResetPasswordPayload(BaseModel):
 
 
 class TemplatePayload(BaseModel):
-    model_config = ConfigDict(protected_namespaces=())
+    model_config = ConfigDict(populate_by_name=True)
 
     document_type: str
     label: str
-    schema: Dict[str, Any]
+    template_schema: Dict[str, Any] = Field(alias="schema")
 
 
 # ---------------------------------------------------------------------------
@@ -179,45 +179,48 @@ async def register(payload: RegisterPayload, response: Response, request: Reques
     refresh = create_refresh_token(doc["id"])
     set_auth_cookies(response, access, refresh)
 
-    await write_log(
-        db, actor_id=doc["id"], actor_email=doc["email"], actor_role=doc["role"],
+    await log_from_user(
+        db, doc,
         action="USER_REGISTER", target_type="user", target_id=doc["id"],
     )
     return {"user": public_user(doc), "access_token": access}
 
 
+async def _check_lockout(identifier: str) -> None:
+    rec = await db.login_attempts.find_one({"identifier": identifier})
+    locked_until = (rec or {}).get("locked_until")
+    if isinstance(locked_until, str):
+        locked_until = datetime.fromisoformat(locked_until)
+    if locked_until and locked_until > datetime.now(timezone.utc):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+
+
+async def _record_failure(identifier: str, client_ip: str) -> None:
+    from datetime import timedelta
+    rec = await db.login_attempts.find_one({"identifier": identifier}) or {}
+    attempts = rec.get("count", 0) + 1
+    update: Dict[str, Any] = {
+        "count": attempts, "identifier": identifier, "last_ip": client_ip,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if attempts >= 5:
+        update["locked_until"] = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+    await db.login_attempts.update_one({"identifier": identifier}, {"$set": update}, upsert=True)
+
+
 @api_router.post("/auth/login")
 async def login(payload: LoginPayload, response: Response, request: Request):
     email = payload.email.lower().strip()
-    # Key by email + first IP in X-Forwarded-For (fall back to client.host) so
-    # the lockout survives multi-pod ingress — each pod sees the ingress IP
-    # as client.host which would otherwise partition the counter.
+    # Key solely on email so lockout survives multi-pod ingress.
+    identifier = email
     fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
     client_ip = fwd or (request.client.host if request.client else "unknown")
-    identifier = f"{email}"  # key solely on email; shared across pods
-    _ip_hint = client_ip  # kept for the audit meta below
 
-    # Brute force check
-    rec = await db.login_attempts.find_one({"identifier": identifier})
-    if rec and rec.get("locked_until"):
-        locked_until = rec["locked_until"]
-        if isinstance(locked_until, str):
-            locked_until = datetime.fromisoformat(locked_until)
-        if locked_until > datetime.now(timezone.utc):
-            raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+    await _check_lockout(identifier)
 
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(payload.password, user["password_hash"]):
-        attempts = (rec or {}).get("count", 0) + 1
-        update: Dict[str, Any] = {
-            "count": attempts, "identifier": identifier,
-            "last_ip": _ip_hint,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        if attempts >= 5:
-            from datetime import timedelta
-            update["locked_until"] = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
-        await db.login_attempts.update_one({"identifier": identifier}, {"$set": update}, upsert=True)
+        await _record_failure(identifier, client_ip)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     await db.login_attempts.delete_one({"identifier": identifier})
@@ -226,8 +229,8 @@ async def login(payload: LoginPayload, response: Response, request: Request):
     refresh = create_refresh_token(user["id"])
     set_auth_cookies(response, access, refresh)
 
-    await write_log(
-        db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+    await log_from_user(
+        db, user,
         action="USER_LOGIN", target_type="user", target_id=user["id"],
     )
     return {"user": public_user(user), "access_token": access}
@@ -236,8 +239,10 @@ async def login(payload: LoginPayload, response: Response, request: Request):
 @api_router.post("/auth/logout")
 async def logout(response: Response, user: dict = Depends(get_current_user)):
     clear_auth_cookies(response)
-    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
-                    action="USER_LOGOUT", target_type="user", target_id=user["id"])
+    await log_from_user(
+        db, user,
+        action="USER_LOGOUT", target_type="user", target_id=user["id"],
+    )
     return {"ok": True}
 
 
@@ -300,8 +305,8 @@ async def forgot_password(payload: ForgotPasswordPayload):
         else:
             logger.warning("RESEND_API_KEY missing — reset link for %s: %s", email, reset_url)
 
-        await write_log(
-            db, actor_id=user["id"], actor_email=email, actor_role=user["role"],
+        await log_from_user(
+            db, user,
             action="PASSWORD_RESET_REQUESTED", target_type="user", target_id=user["id"],
             meta={"email_sent": email_configured()},
         )
@@ -329,10 +334,10 @@ async def reset_password(payload: ResetPasswordPayload):
         {"$set": {"used": True, "used_at": datetime.now(timezone.utc).isoformat()}},
     )
     await db.login_attempts.delete_one({"identifier": rec["email"]})
-    await write_log(
-        db, actor_id=rec["user_id"], actor_email=rec["email"], actor_role=None,
+    await write_log(db, AuditEvent(
+        actor_id=rec["user_id"], actor_email=rec["email"],
         action="PASSWORD_RESET_COMPLETED", target_type="user", target_id=rec["user_id"],
-    )
+    ))
     return {"ok": True}
 
 
@@ -359,8 +364,8 @@ async def change_user_role(user_id: str, payload: UserRoleUpdate, actor: dict = 
         {"id": user_id},
         {"$set": {"role": payload.role, "updated_at": datetime.now(timezone.utc).isoformat()}},
     )
-    await write_log(
-        db, actor_id=actor["id"], actor_email=actor["email"], actor_role=actor["role"],
+    await log_from_user(
+        db, actor,
         action="USER_ROLE_CHANGE", target_type="user", target_id=user_id,
         meta={"new_role": payload.role, "old_role": target["role"]},
     )
@@ -375,8 +380,8 @@ async def delete_user(user_id: str, actor: dict = Depends(require_roles("admin")
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     await db.users.delete_one({"id": user_id})
-    await write_log(
-        db, actor_id=actor["id"], actor_email=actor["email"], actor_role=actor["role"],
+    await log_from_user(
+        db, actor,
         action="USER_DELETE", target_type="user", target_id=user_id, meta={"email": target["email"]},
     )
     return {"ok": True}
@@ -413,15 +418,16 @@ async def create_template(payload: TemplatePayload, actor: dict = Depends(requir
     dtype = payload.document_type.upper().strip()
     if not re.fullmatch(r"[A-Z0-9_]{2,32}", dtype):
         raise HTTPException(status_code=400, detail="document_type must be 2-32 chars [A-Z0-9_]")
-    err = validate_schema(payload.schema)
+    err = validate_schema(payload.template_schema)
     if err:
         raise HTTPException(status_code=400, detail=err)
 
-    tpl = {"document_type": dtype, "label": payload.label.strip() or dtype, "schema": payload.schema}
+    tpl = {"document_type": dtype, "label": payload.label.strip() or dtype, "schema": payload.template_schema}
     await db.document_templates.update_one({"document_type": dtype}, {"$set": tpl}, upsert=True)
     upsert_runtime_template(tpl)
 
-    await write_log(db, actor_id=actor["id"], actor_email=actor["email"], actor_role=actor["role"],
+    await log_from_user(
+        db, actor,
                     action="TEMPLATE_UPSERT", target_type="template", target_id=dtype,
                     meta={"label": tpl["label"]})
     return tpl
@@ -442,7 +448,8 @@ async def delete_template(doc_type: str, actor: dict = Depends(require_roles("ad
         result = await db.document_templates.delete_one({"document_type": dtype})
         remove_runtime_template(dtype)
         # Put the factory default back on disk so list endpoint shows it unchanged
-        await write_log(db, actor_id=actor["id"], actor_email=actor["email"], actor_role=actor["role"],
+        await log_from_user(
+        db, actor,
                         action="TEMPLATE_RESET", target_type="template", target_id=dtype)
         return {"reset": True, "found_override": result.deleted_count > 0}
 
@@ -450,7 +457,8 @@ async def delete_template(doc_type: str, actor: dict = Depends(require_roles("ad
     remove_runtime_template(dtype)
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Template not found")
-    await write_log(db, actor_id=actor["id"], actor_email=actor["email"], actor_role=actor["role"],
+    await log_from_user(
+        db, actor,
                     action="TEMPLATE_DELETE", target_type="template", target_id=dtype)
     return {"deleted": dtype}
 
@@ -552,7 +560,8 @@ async def _run_pipeline(doc_id: str) -> None:
 @api_router.post("/documents/upload")
 async def upload_document(file: UploadFile = File(...), user: dict = Depends(require_min_role("user"))):
     saved = await _save_upload(file, user)
-    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+    await log_from_user(
+        db, user,
                     action="DOC_UPLOAD", target_type="document", target_id=saved["id"],
                     meta={"filename": saved["filename"]})
     return saved
@@ -565,7 +574,8 @@ async def process_document(doc_id: str, user: dict = Depends(require_min_role("u
         raise HTTPException(status_code=404, detail="Document not found")
     await _run_pipeline(doc_id)
     updated = await db.documents.find_one({"id": doc_id}, {"_id": 0})
-    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+    await log_from_user(
+        db, user,
                     action="DOC_PROCESS", target_type="document", target_id=doc_id,
                     meta={"type": updated.get("type"), "ocr": updated.get("ocr_method")})
     return _serialize(updated)
@@ -614,7 +624,8 @@ async def bulk_upload(
         except HTTPException as e:
             results.append({"filename": f.filename, "queued": False, "error": e.detail})
 
-    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+    await log_from_user(
+        db, user,
                     action="DOC_BULK_UPLOAD", target_type="document",
                     meta={"count": len(results), "runner": runner})
     return {"queued": sum(1 for r in results if r.get("queued")), "runner": runner, "items": results}
@@ -732,7 +743,8 @@ async def review_document(doc_id: str, payload: ReviewPayload, user: dict = Depe
         updates["type"] = payload.type.upper()
     await db.documents.update_one({"id": doc_id}, {"$set": updates})
 
-    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+    await log_from_user(
+        db, user,
                     action="DOC_REVIEW", target_type="document", target_id=doc_id,
                     meta={"status": updates["status"]})
     merged = {**existing, **updates}
@@ -749,7 +761,8 @@ async def delete_document(doc_id: str, user: dict = Depends(require_min_role("us
         except OSError:
             pass
     await db.documents.delete_one({"id": doc_id})
-    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+    await log_from_user(
+        db, user,
                     action="DOC_DELETE", target_type="document", target_id=doc_id,
                     meta={"filename": existing.get("filename")})
     return {"deleted": doc_id}
@@ -768,7 +781,8 @@ async def create_manual_document(payload: CreateDocumentPayload, user: dict = De
     stored = _serialize(doc.model_dump())
     await db.documents.insert_one(stored)
     stored.pop("_id", None)
-    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
+    await log_from_user(
+        db, user,
                     action="DOC_CREATE_MANUAL", target_type="document", target_id=doc.id,
                     meta={"type": doc.type})
     return doc.model_dump()
@@ -783,13 +797,26 @@ async def get_document_file(doc_id: str, user: dict = Depends(get_current_user))
     return FileResponse(str(file_path), media_type="application/pdf", filename=file_path.name)
 
 
+def _reference_of(doc: Dict[str, Any]) -> str:
+    header = (doc.get("extracted_data") or {}).get("header", {})
+    for k in ("quotation_number", "po_number", "invoice_number", "request_number", "delivery_number"):
+        val = header.get(k)
+        if val:
+            return str(val)
+    return str(doc.get("id", ""))[:8]
+
+
+def _render_pdf_or_400(doc: Dict[str, Any]) -> bytes:
+    try:
+        return render_document_pdf(doc.get("type", "OTHER"), doc.get("extracted_data") or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @api_router.get("/documents/{doc_id}/pdf")
 async def generate_document_pdf(doc_id: str, user: dict = Depends(get_current_user)):
     doc = await _get_doc_checked(doc_id, user)
-    try:
-        pdf_bytes = render_document_pdf(doc.get("type", "OTHER"), doc.get("extracted_data") or {})
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    pdf_bytes = _render_pdf_or_400(doc)
     return FastResponse(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -798,43 +825,40 @@ async def generate_document_pdf(doc_id: str, user: dict = Depends(get_current_us
 
 
 @api_router.post("/documents/{doc_id}/email")
-async def email_document(doc_id: str, payload: EmailPayload, user: dict = Depends(require_min_role("manager"))):
+async def email_document(
+    doc_id: str, payload: EmailPayload,
+    user: dict = Depends(require_min_role("manager")),
+):
     doc = await _get_doc_checked(doc_id, user)
     if not email_configured():
         raise HTTPException(
             status_code=503,
             detail="Email not configured. Set RESEND_API_KEY and RESEND_FROM_EMAIL in backend .env, then restart.",
         )
-    try:
-        pdf_bytes = render_document_pdf(doc.get("type", "OTHER"), doc.get("extracted_data") or {})
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
 
-    header = (doc.get("extracted_data") or {}).get("header", {})
-    ref = (
-        header.get("quotation_number") or header.get("po_number")
-        or header.get("invoice_number") or header.get("request_number")
-        or header.get("delivery_number") or doc_id[:8]
-    )
-    default_subject = f"{doc.get('type', 'Document')} {ref}"
+    pdf_bytes = _render_pdf_or_400(doc)
+    ref = _reference_of(doc)
+    subject = payload.subject or f"{doc.get('type', 'Document')} {ref}"
+    message = payload.message or f"Please find attached {doc.get('type', 'document')} {ref}."
 
     try:
         result = send_pdf_email(
             to=payload.to, cc=payload.cc,
-            subject=payload.subject or default_subject,
-            message=payload.message or f"Please find attached {doc.get('type', 'document')} {ref}.",
+            subject=subject, message=message,
             pdf_bytes=pdf_bytes,
             filename=f"{doc.get('type', 'document')}-{ref}.pdf",
         )
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("Email send failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"Email provider error: {exc}")
+        raise HTTPException(status_code=502, detail=f"Email provider error: {exc}") from exc
 
-    await write_log(db, actor_id=user["id"], actor_email=user["email"], actor_role=user["role"],
-                    action="DOC_EMAIL", target_type="document", target_id=doc_id,
-                    meta={"to": payload.to, "ref": ref})
+    await log_from_user(
+        db, user,
+        action="DOC_EMAIL", target_type="document", target_id=doc_id,
+        meta={"to": payload.to, "ref": ref},
+    )
     return {"ok": True, "provider_response": result}
 
 

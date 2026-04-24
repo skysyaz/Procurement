@@ -1,0 +1,51 @@
+{
+  "summary": "Phase 4 hardening pass validated. Ran full regression (Phase 2 + Phase 3 = 57/57 green) plus added /app/backend/tests/test_procureflow_phase4_hardening.py (8 new tests, 8/8 green) to specifically cover the code-review hardening: cookie-only auth, Bearer backwards compat, AuditEvent.actor_* population for USER_REGISTER + PASSWORD_RESET_COMPLETED, TemplatePayload alias='schema', email endpoint 503 when Resend unconfigured. Code inspection confirms _check_lockout / _record_failure / _reference_of / _render_pdf_or_400 helpers exist, AuditEvent dataclass + log_from_user wrapper exist, frontend api.js has no Bearer interceptor and only withCredentials:true. Grand total: 65/65 passing. NOTE: redis-server was missing from the container at start — had to apt-get install redis-server + supervisorctl start redis + restart celery before Celery-dependent tests could run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "infra",
+        "issue": "redis-server binary was missing in the preview container (supervisor redis task was FATAL). Installed via apt-get during test run. If image is rebuilt this will regress — redis-server should be baked into the base image or installed in a setup script."
+      },
+      {
+        "endpoint": "POST /api/auth/login (carried)",
+        "issue": "Brute-force lockout still keys on request.client.host+email (single-pod). Unchanged from prior iterations."
+      },
+      {
+        "endpoint": "POST /api/admin/templates (carried)",
+        "issue": "document_type regex runs after .upper() so lowercase payloads are silently uppercased. Cosmetic."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_procureflow_phase4_hardening.py",
+    "/app/backend/tests/test_procureflow_phase2.py",
+    "/app/backend/tests/test_procureflow_phase3.py",
+    "/app/test_reports/pytest/iteration4_results.xml",
+    "/app/test_reports/pytest/phase4_results.xml"
+  ],
+  "action_items": [
+    "Ensure redis-server is pre-installed in the container image (or in the supervisor bootstrap) so Celery-backed bulk pipeline works on fresh boots without manual apt-get."
+  ],
+  "critical_code_review_comments": [
+    "TemplatePayload: alias='schema' works; response also serializes the field as 'schema' in the DB document (server writes `{..., 'schema': payload.template_schema}`), so the external API contract stays intact. Good.",
+    "_render_pdf_or_400 correctly centralises the HTTPException(400) path and returns pdf_bytes guaranteed non-None — the 'possibly unbound' pdf_bytes/result concern is resolved.",
+    "audit_service.write_log now takes AuditEvent dataclass — forces structured fields (actor_id/actor_email/action/target_*). Verified via logs: USER_REGISTER and PASSWORD_RESET_COMPLETED both carry actor_id + actor_email.",
+    "Frontend api.js: confirmed no Bearer interceptor, no localStorage.getItem('pf_access_token') anywhere in /app/frontend/src/lib/{api.js,auth.jsx}. withCredentials:true is the sole auth transport as intended.",
+    "Carried from iter 3: celery_app.py spawns fresh AsyncIOMotorClient + asyncio.run per task; startup still uses deprecated @app.on_event; bulk_upload overwrites `runner` per loop iteration. All low priority."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_procureflow_phase4_hardening.py (new, 8 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (phase2 38/38 + phase3 19/19 + phase4 8/8 = 65/65)",
+    "frontend": "not tested (scope: backend only)"
+  },
+  "test_credentials": "Admin: syazwan.zulkifli@quatriz.com.my / Admin@123 (read from /app/backend/.env — unchanged)",
+  "seed_data_creation": "Phase 4 suite auto-registers + deletes: 1 audit-register user, 1 password-reset user, 1 custom template (ALIASxxxxxx), 1 uploaded doc for email-503 test. All cleaned up in finally blocks.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run `pytest /app/backend/tests/test_procureflow_phase2.py /app/backend/tests/test_procureflow_phase3.py /app/backend/tests/test_procureflow_phase4_hardening.py -v` for the full 65-test regression (~2.5 min). BEFORE running, verify `redis-cli ping` returns PONG — if redis-server is missing (FATAL in supervisorctl status), run `apt-get install -y redis-server && supervisorctl start redis && supervisorctl restart celery`. All suites read ADMIN_EMAIL/ADMIN_PASSWORD from /app/backend/.env via python-dotenv. Phase 4 test `test_password_reset_completed_writes_actor_via_write_log` queries the DB directly for the reset token via pymongo, so MONGO_URL/DB_NAME must be reachable.",
+  "rca of the issue": "No functional bugs. Only environmental: redis-server binary absent on fresh preview container caused celery consumer to back-off (ConnectionRefused 127.0.0.1:6379). Fixed in-situ by apt install; no code change required."
+}

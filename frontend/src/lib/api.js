@@ -4,14 +4,7 @@ const BASE = process.env.REACT_APP_BACKEND_URL;
 
 export const api = axios.create({
   baseURL: `${BASE}/api`,
-  withCredentials: true,
-});
-
-// Bearer header fallback alongside cookies (both are accepted by backend)
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("pf_access_token");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
+  withCredentials: true, // httpOnly auth cookies are the sole token transport
 });
 
 export const fileUrl = (path) =>

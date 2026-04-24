@@ -11,11 +11,13 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv("/app/frontend/.env")
+load_dotenv("/app/backend/.env")
 BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
 API = f"{BASE_URL}/api"
 
-ADMIN_EMAIL = "syazwan.zulkifli@quatriz.com.my"
-ADMIN_PASSWORD = "Admin@123"
+# Credentials come from backend .env (seeded admin) — never hardcode secrets
+ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
+ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 
 SAMPLE_PDF_URL = (
     "https://customer-assets.emergentagent.com/job_smart-procurement-31/"

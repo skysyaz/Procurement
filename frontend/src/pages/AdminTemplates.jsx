@@ -26,14 +26,34 @@ export default function AdminTemplates() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
   const startEdit = (tpl) => {
+    // Clone and attach stable row ids so React keys survive key/label edits
+    const genId = () => (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const withIds = (rows) => rows.map((r) => ({ ...r, _rid: r._rid || genId() }));
+    const copy = JSON.parse(JSON.stringify(tpl));
+    copy.schema.header_fields = withIds(copy.schema.header_fields || []);
+    copy.schema.item_columns = withIds(copy.schema.item_columns || []);
+    copy.schema.totals = withIds(copy.schema.totals || []);
     setSelected(tpl);
-    setEditing(JSON.parse(JSON.stringify(tpl)));
+    setEditing(copy);
     setSaved(null);
   };
 
   const save = async () => {
     try {
-      await api.post("/admin/templates", editing);
+      // Strip synthetic _rid before sending to backend
+      const strip = (rows) => rows.map(({ _rid, ...rest }) => rest);
+      const payload = {
+        ...editing,
+        schema: {
+          ...editing.schema,
+          header_fields: strip(editing.schema.header_fields || []),
+          item_columns: strip(editing.schema.item_columns || []),
+          totals: strip(editing.schema.totals || []),
+        },
+      };
+      await api.post("/admin/templates", payload);
       setSaved(editing.document_type);
       await load();
       setEditing(null);
@@ -123,7 +143,10 @@ function Editor({ editing, setEditing, onSave, onReset, onRemove, isBuiltin }) {
     const next = { ...editing, schema: { ...editing.schema, [listKey]: editing.schema[listKey].map((x, i) => i === idx ? { ...x, [key]: value } : x) } };
     setEditing(next);
   };
-  const addRow = (listKey, blank) => setEditing({ ...editing, schema: { ...editing.schema, [listKey]: [...editing.schema[listKey], blank] } });
+  const addRow = (listKey, blank) => {
+    const withId = { ...blank, _rid: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `r_${Date.now()}` };
+    setEditing({ ...editing, schema: { ...editing.schema, [listKey]: [...editing.schema[listKey], withId] } });
+  };
   const removeRow = (listKey, idx) => setEditing({ ...editing, schema: { ...editing.schema, [listKey]: editing.schema[listKey].filter((_, i) => i !== idx) } });
 
   return (
@@ -209,7 +232,7 @@ function FieldEditor({ title, rows, add, update, remove, showRequired, showCompu
           <tbody>
             {rows.length === 0 && <tr><td colSpan={8} className="text-center text-[#71717A] py-4">Empty.</td></tr>}
             {rows.map((f, i) => (
-              <tr key={i}>
+              <tr key={f._rid || `pos_${i}`}>
                 <td className="tabular-nums text-[#71717A]">{i + 1}</td>
                 <td><input className="pf-input font-mono-tab text-[12px]" value={f.key || ""} onChange={(e) => update(i, "key", e.target.value)} data-testid={`${testIdPrefix}-key-${i}`} /></td>
                 <td><input className="pf-input" value={f.label || ""} onChange={(e) => update(i, "label", e.target.value)} data-testid={`${testIdPrefix}-label-${i}`} /></td>

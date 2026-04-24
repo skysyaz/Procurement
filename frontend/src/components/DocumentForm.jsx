@@ -49,6 +49,10 @@ export default function DocumentForm({ template, value, onChange }) {
 
   const addItem = () => {
     const blank = Object.fromEntries(itemCols.map((c) => [c.key, c.type === "number" ? 0 : ""]));
+    // Give every row a stable client-side id so React keys survive reorder/edit
+    blank.__rid = (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `r_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const rec = computeTotals([...items.map((x) => ({ ...x })), blank]);
     onChange({ ...value, items: rec.items, totals: rec.totals });
   };
@@ -114,7 +118,7 @@ export default function DocumentForm({ template, value, onChange }) {
                   <tr><td colSpan={itemCols.length + 2} className="text-center text-[#71717A] py-6">No items. Add a row.</td></tr>
                 )}
                 {items.map((it, idx) => (
-                  <tr key={idx} data-testid={`item-row-${idx}`}>
+                  <tr key={it.__rid || `pos_${idx}`} data-testid={`item-row-${idx}`}>
                     <td className="tabular-nums text-[#71717A]">{idx + 1}</td>
                     {itemCols.map((c) => (
                       <td key={c.key}>

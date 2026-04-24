@@ -22,21 +22,24 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const r = await api.post("/auth/login", { email, password });
-    if (r.data.access_token) localStorage.setItem("pf_access_token", r.data.access_token);
+    // Access token is delivered via httpOnly cookie; we only keep the user payload in memory.
     setUser(r.data.user);
     return r.data.user;
   };
 
   const register = async (email, password, name) => {
     const r = await api.post("/auth/register", { email, password, name });
-    if (r.data.access_token) localStorage.setItem("pf_access_token", r.data.access_token);
     setUser(r.data.user);
     return r.data.user;
   };
 
   const logout = async () => {
-    try { await api.post("/auth/logout"); } catch { /* ignore */ }
-    localStorage.removeItem("pf_access_token");
+    try {
+      await api.post("/auth/logout");
+    } catch (err) {
+      // Non-fatal: still clear local state even if the server couldn't be reached.
+      console.warn("Logout request failed:", err?.message || err);
+    }
     setUser(false);
   };
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { api, fileUrl } from "../lib/api";
 import DocumentForm from "../components/DocumentForm";
@@ -21,18 +21,20 @@ export default function Review() {
   const { user } = useAuth();
   const nav = useNavigate();
 
-  const loadAll = async (docType) => {
+  const loadTemplate = useCallback(async (docType) => {
     if (docType && docType !== "OTHER") {
       const tpl = await api.get(`/templates/${docType}`);
       setTemplate(tpl.data);
     } else {
       setTemplate(null);
     }
-  };
+  }, []);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       const r = await api.get(`/documents/${id}`);
+      if (cancelled) return;
       setDoc(r.data);
       setTypeOverride(r.data.type);
       setValue({
@@ -40,13 +42,14 @@ export default function Review() {
         items: r.data.extracted_data?.items || [],
         totals: r.data.extracted_data?.totals || {},
       });
-      await loadAll(r.data.type);
+      await loadTemplate(r.data.type);
     })();
-  }, [id]);
+    return () => { cancelled = true; };
+  }, [id, loadTemplate]);
 
   const onTypeChange = async (t) => {
     setTypeOverride(t);
-    await loadAll(t);
+    await loadTemplate(t);
   };
 
   const save = async (markAs) => {
