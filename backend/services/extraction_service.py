@@ -88,4 +88,13 @@ async def extract_structured(document_type: str, raw_text: str) -> Dict[str, Any
     parsed.setdefault("header", {})
     parsed.setdefault("items", [])
     parsed.setdefault("totals", {})
+
+    # Stabilize quotation identifier placement. LLM occasionally flips the
+    # Q-number between quotation_number and reference_number; ensure the
+    # primary field is populated so downstream rendering and search work.
+    if document_type == "QUOTATION":
+        hdr = parsed["header"]
+        if not hdr.get("quotation_number") and hdr.get("reference_number"):
+            hdr["quotation_number"] = hdr["reference_number"]
+
     return parsed
