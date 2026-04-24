@@ -1,0 +1,42 @@
+{
+  "summary": "Full regression tested ProcureFlow backend via public REACT_APP_BACKEND_URL. 17/17 pytest tests passed covering root, templates (list + single + 404), dashboard stats, upload validation, PDF upload, process (OCR + classification + Gemini extraction on real sample QUOTATION), list/filter, get by id, review (REVIEWED and FINAL), manual PO create, PDF render, original file stream, and delete (doc + file).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/documents/{id}/process",
+        "issue": "LLM extraction for the sample quotation left header.quotation_number='' while placing 'QSSB/AFASS/BD/042026/3015/ZZ' into header.reference_number. The identifier is captured but in the wrong schema field, which will surprise downstream consumers / PDF render that keys off quotation_number. Consider tightening the prompt or post-processing to copy reference_number -> quotation_number when the latter is empty. (Non-deterministic: E1 manually saw it populate quotation_number previously.)"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_procureflow_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: harden extraction_service.py so that when quotation_number is blank but reference_number is present, copy it across (or instruct the LLM to treat the top-right Q-number as quotation_number for QUOTATION docs)."
+  ],
+  "critical_code_review_comments": [
+    "server.py line 30/32: os.environ['MONGO_URL'] / os.environ['DB_NAME'] raise KeyError at import time if missing - acceptable fail-fast, but combined with load_dotenv this is fine.",
+    "process_document merges existing + updates and returns datetimes as ISO strings after _deserialize tries to parse them - inconsistent shape (other GETs return ISO strings via _serialize). Consider returning the freshly fetched doc to keep response schema uniform.",
+    "list_documents upper-cases filter values but does not validate against DOC_TYPES/DOC_STATUSES/DOC_SOURCES enums - arbitrary filter values silently return [].",
+    "review_document does not validate payload.status against DOC_STATUSES and does not validate payload.type against DOC_TYPES - caller could set any string.",
+    "No size/MIME-type cap on /documents/upload beyond extension check; a large malicious upload is written chunk by chunk without limit.",
+    "Response for process_document returns raw_text which can be large; list view strips it but detail view keeps it - fine, but be aware of payload size.",
+    "Delete endpoint returns {'deleted': id} with 200; REST convention would be 204 No Content."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_procureflow_api.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (skipped per request)"},
+  "test_credentials": "N/A - no authentication in app",
+  "seed_data_creation": "Each test creates its own TEST_ prefixed manual PO and uploads sample quotation; both are deleted by the final delete tests, so DB is left clean.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regression file lives at /app/backend/tests/test_procureflow_api.py. Sample PDF is fetched from /tmp/sample_quotation.pdf; if rerunning, download again from https://customer-assets.emergentagent.com/job_smart-procurement-31/artifacts/4fp2xmmo_QUO_AFA_AD-HOC%20MAINTENANCE%20-%20GOM%2C%20T11.pdf. Extraction assertion is loose: accepts QSSB in either quotation_number or reference_number because Gemini flips between them."
+}
