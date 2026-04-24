@@ -1,65 +1,63 @@
 # ProcureFlow — Procurement Document OS (PRD)
 
 ## Problem Statement
-Extend a procurement web app to support: (1) automated document processing (OCR + AI extraction), (2) manual document creation from templates, (3) PDF generation, (4) multi-user collaboration with roles + audit, (5) bulk processing, (6) email distribution.
+Extend a procurement web app to support: (1) automated document processing (OCR + AI extraction), (2) manual document creation from templates, (3) PDF generation, (4) multi-user collaboration with roles + audit, (5) bulk processing, (6) email distribution, (7) password reset, (8) admin-editable templates, (9) scalable queue.
 
 ## Stack
 - **Backend**: FastAPI (Python), MongoDB (Motor), local file storage at `/app/backend/uploads`
+- **Queue**: Celery + Redis (supervised); in-process BackgroundTasks fallback when Redis unreachable
 - **Frontend**: React 19 + Tailwind + Phosphor (Cabinet Grotesk / IBM Plex Sans)
 - **OCR**: `pypdf` (digital) → Tesseract + `pdf2image` (scanned fallback)
 - **LLM**: Gemini 2.5 Flash via `emergentintegrations` + Emergent Universal LLM Key
 - **PDF gen**: ReportLab
-- **Email**: Resend (graceful 503 when `RESEND_API_KEY` unset)
-- **Auth**: JWT (httpOnly cookies + Bearer fallback), bcrypt hashing, 5-failure brute-force lockout (keyed by email across pods)
+- **Email**: Resend (graceful 503 when unconfigured) — PDF attachments + password-reset
+- **Auth**: JWT (httpOnly cookies + Bearer fallback), bcrypt, email-keyed brute-force lockout, admin seeded on startup
 
 ## Personas
-- **Admin** — full access; manages users, views audit log.
-- **Manager** — all documents org-wide; finalizes, emails.
-- **User** — owns documents they upload/create.
-- **Viewer** — read-only.
+- **Admin** — full access; manages users, templates, audit log, queue status
+- **Manager** — all documents org-wide; finalizes + emails
+- **User** — owns documents they upload/create
+- **Viewer** — read-only
 
-## Core Modules / Services
-- `services/ocr_service.py` · `classification_service.py` · `extraction_service.py` · `templates.py` · `pdf_service.py` · `email_service.py` · `audit_service.py` · `auth_service.py`
+## Services
+`ocr_service · classification_service · extraction_service · templates · pdf_service · email_service · audit_service · auth_service · celery_app`
 
 ## API (all under `/api`)
-**Auth**: `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`, `/auth/refresh`
-**Docs**: `/documents/upload`, `/documents/bulk-upload`, `/documents/bulk-status`, `/documents/{id}/process`, `/documents` (paginated + regex search), `/documents/{id}`, `/documents/{id}/review`, `/documents/create`, `/documents/{id}/file`, `/documents/{id}/pdf`, `/documents/{id}/email`, `DELETE /documents/{id}`
-**Templates**: `/templates`, `/templates/{type}`
-**Dashboard**: `/dashboard/stats`
-**Admin**: `/admin/users`, `/admin/users/{id}/role`, `DELETE /admin/users/{id}`, `/audit-logs`
+- **Auth**: `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`, `/auth/refresh`, `/auth/forgot-password`, `/auth/reset-password`
+- **Docs**: `/documents/upload`, `/documents/bulk-upload` (Celery-routed), `/documents/bulk-status`, `/documents/{id}/process`, `/documents` (paginated + regex), `/documents/{id}`, `/documents/{id}/review`, `/documents/create`, `/documents/{id}/file`, `/documents/{id}/pdf`, `/documents/{id}/email`, `DELETE /documents/{id}`
+- **Templates**: `/templates`, `/templates/{type}`
+- **Admin**: `/admin/users` (list/update role/delete), `/admin/templates` (POST/PUT/DELETE — DB-backed with built-in defaults + reset-to-default), `/admin/queue-status`, `/audit-logs`
+- **Dashboard**: `/dashboard/stats`
 
-## Templates Supported
-PO, PR, DO, QUOTATION, INVOICE
+## Supported Templates (built-in + custom)
+PO, PR, DO, QUOTATION, INVOICE — plus any admin-defined custom types (e.g. PACKING_LIST). Schemas stored in `document_templates` MongoDB collection, merged with built-in defaults at startup.
 
 ## What's Implemented (2026-04-24)
-### Phase 1
-- Full OCR → classify → extract → review → PDF generation pipeline on 4 templates
-- Validated live on a real Quatriz quotation PDF
-- 17/17 Phase-1 backend tests green
+### Phase 1 — Core pipeline
+- OCR → classify → extract → review → PDF generation on 4 templates. Validated on real Quatriz quotation.
+- 17/17 initial tests green.
 
-### Phase 2
-- INVOICE template
-- Tesseract scanned-PDF fallback (digital-first, OCR fallback)
-- Server-side pagination + regex search across filename + 9 header fields
-- Bulk upload (≤20 PDFs) with FastAPI BackgroundTasks + polling status endpoint
-- Resend-powered email with styled HTML + PDF attachment (503 when unconfigured)
-- JWT auth: login/register/me/logout/refresh, bcrypt, httpOnly cookies + Bearer fallback
-- Brute-force lockout (email-keyed, works behind multi-pod ingress) — verified via curl
-- 4-role RBAC enforced on every write endpoint + ownership scoping on reads for user/viewer
-- Audit log collection with Admin-only browse UI + filter
-- Admin Users page (role change + delete, self-demote/delete guarded)
-- **38/38 Phase-2 backend tests green**
-- Frontend: Login/Register pages, AuthContext, ProtectedRoute, user menu, admin navigation, bulk upload UI, Email dialog, server-side pagination controls
+### Phase 2 — Multi-user + production features
+- INVOICE template, Tesseract scanned-PDF fallback, server-side pagination + regex search, bulk upload (BackgroundTasks), Resend email for PDF, JWT + 4-role RBAC, audit log.
+- 38/38 Phase-2 tests green.
 
-## Backlog (Prioritized)
-- **P1** Store `login_attempts.locked_until` as native BSON date + TTL auto-expiry
-- **P1** Lifespan context manager instead of `@app.on_event`
-- **P2** Password reset flow (email token) — hook into Resend
-- **P2** Template editor UI (edit schemas from browser)
+### Phase 3 — Admin power features (2026-04-24)
+- **Password reset** flow end-to-end: email token generation → `/reset-password?token=...` landing → password update → login-attempts wipe. Token stored in `password_reset_tokens` with 1h expiry; links logged when Resend unconfigured.
+- **Admin template editor** — DB-backed override layer on top of built-in defaults. Admins can create custom types, edit schemas (header fields / item columns / totals / tax rate), and reset built-ins. Schema validator enforces key+label, allowed types, numeric tax_rate.
+- **Celery + Redis** queue for bulk processing — both supervised. Bulk upload routes through Celery when Redis reachable; falls back to FastAPI BackgroundTasks otherwise. Admin dashboard shows live queue status (runner, in-flight, pending, failed).
+- **19/19 Phase-3 tests** + all Phase-2 regression = **57/57 green**.
+- Frontend: Forgot/Reset password pages, Admin Templates page with full CRUD editor, Dashboard queue-status strip, Sidebar "Templates" admin link.
+
+## Prioritized Backlog
+- **P1** Store `password_reset_tokens.expires_at` as BSON date + TTL index (auto-expiry)
+- **P1** Migrate `@app.on_event` → FastAPI lifespan context
+- **P2** Tighten `document_type` regex (reject lowercase raw input)
+- **P2** Per-item runner tracking in bulk-upload response
+- **P2** Template editor UX: drag-to-reorder fields, JSON preview, duplicate-key warnings
 - **P2** Multi-page PDF preview zoom controls
-- **P3** Replace in-process BackgroundTasks with Celery/Redis when scale demands
-- **P3** Signed URLs for generated PDFs (for email CTAs)
+- **P3** Persistent Celery worker loop/Mongo client for throughput
 - **P3** Outbound webhooks (on_document_final → Slack/Teams)
+- **P3** Scanned-PDF OCR language packs + per-page progress
 
 ## Credentials
 Seed admin: `syazwan.zulkifli@quatriz.com.my` / `Admin@123` (see `/app/memory/test_credentials.md`).
