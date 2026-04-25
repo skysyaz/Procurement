@@ -110,6 +110,10 @@ def _styles():
             "H1", parent=s["Heading1"], fontSize=16, leading=20,
             textColor=INK, fontName="Helvetica-Bold", alignment=1,
         ),
+        "title_box": ParagraphStyle(
+            "TitleBox", parent=s["Normal"], fontSize=10, leading=11,
+            textColor=INK, fontName="Helvetica-Bold", alignment=1,
+        ),
         "neutral_title": ParagraphStyle(
             "NeutralTitle", parent=s["Heading1"], fontSize=14, leading=18,
             textColor=INK, fontName="Helvetica-Bold",
@@ -134,25 +138,27 @@ def _branded_top_band(title: str, st) -> Table:
     else:
         left_cell.append(Paragraph(f"<b>{COMPANY_NAME}</b>", st["h1"]))
 
+    # Compact bordered title box (matches the original Quatriz quotation:
+    # ~40mm wide, ~7mm tall, plain white, thin black border, modest font).
     right_box = Table(
-        [[Paragraph(title.upper(), st["h1"])]],
-        colWidths=[60 * mm],
-        rowHeights=[18 * mm],
+        [[Paragraph(title.upper(), st["title_box"])]],
+        colWidths=[40 * mm],
+        rowHeights=[7 * mm],
     )
     right_box.setStyle(
         TableStyle(
             [
-                ("BOX", (0, 0), (-1, -1), 0.8, INK),
+                ("BOX", (0, 0), (-1, -1), 0.6, INK),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F5F5F4")),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
             ]
         )
     )
 
     band = Table(
         [[left_cell, right_box]],
-        colWidths=[USABLE_W - 65 * mm, 65 * mm],
+        colWidths=[USABLE_W - 45 * mm, 45 * mm],
     )
     band.setStyle(
         TableStyle(
