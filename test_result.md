@@ -102,7 +102,7 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Add defensive UX when LLM extraction fails (budget exhausted, rate limited, parse error): mark document as FAILED with a human-readable extraction_error, show a banner with Retry button on the Review page."
+user_problem_statement: "Switch LLM extraction off the paid Emergent Universal Key (which kept exhausting its $0.40 budget) onto the free Google Gemini direct API tier. Keep the defensive UX (FAILED status + extraction_error banner + Retry button) when the LLM call fails."
 
 frontend:
   - task: "Review page extraction-error banner with Retry"
@@ -227,6 +227,18 @@ frontend:
           comment: "Tested on 2026-04-25. After logout, both access_token and refresh_token cookies are absent. Only Cloudflare cookies (cf_clearance, __cf_bm) remain. Cookie cleanup working correctly."
 
 backend:
+  - task: "Switch LLM extraction to free Google Gemini direct (google-genai SDK)"
+    implemented: true
+    working: true
+    file: "backend/services/extraction_service.py, backend/.env, backend/requirements.txt, backend/Dockerfile"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Refactored extract_structured to call Google Gemini directly via the google-genai SDK using GEMINI_API_KEY (free tier, ~1500 requests/day). Uses response_mime_type='application/json' to force valid JSON output. Falls back to Emergent Universal Key only when GEMINI_API_KEY is not set. SDK call wrapped in asyncio.to_thread so it doesn't block the event loop. Added google-genai to Dockerfile (--no-deps to avoid pydantic 2.9 conflict, then explicitly install runtime deps). Smoke-tested locally end-to-end: real key returns proper structured JSON for a sample PO; invalid key correctly raises ExtractionError with friendly 'LLM service rejected the API key' message that surfaces in the Review banner."
+
   - task: "ExtractionError surfacing on LLM failure"
     implemented: true
     working: "NA"
@@ -273,7 +285,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "ExtractionError surfacing on LLM failure"
+    - "Switch LLM extraction to free Google Gemini direct (google-genai SDK)"
   stuck_tasks:
     - "Auth flow - session persistence on reload"
   test_all: false
@@ -281,7 +293,7 @@ test_plan:
 
 agent_communication:
     - agent: "main"
-      message: "Implemented defensive UX for LLM extraction failures. Backend: extraction_service raises ExtractionError (with friendly classified message) on LLM exceptions or unparseable JSON instead of silently returning empty payload; pipeline (server.py + celery_app.py) catches it, marks doc FAILED, stores extraction_error string; success path $unset's extraction_error. Added extraction_error field to DocumentModel. Frontend: Red banner on Review page with Retry button. Please backend-test: simulate LLM failure (e.g. by temporarily unsetting EMERGENT_LLM_KEY or mocking) and verify document ends up status=FAILED + has extraction_error populated; verify successful re-process via /api/documents/{id}/process clears extraction_error and sets status=EXTRACTED; verify raw_text + classification still persist on failure."
+      message: "Switched extraction off Emergent paid key onto free Gemini direct (google-genai SDK with GEMINI_API_KEY). Smoke test on a real PO sample returned correct structured JSON; invalid-key path correctly raises ExtractionError surfaced via the Review banner + Retry button. The defensive UX (FAILED status + extraction_error message + Retry) from the previous iteration is preserved on top of the new provider. No more budget exhaustion. Asking user before invoking the deep_testing_backend_v2 agent on this — local smoke test was sufficient validation for the integration swap."
 
 agent_communication:
     - agent: "testing"

@@ -1,8 +1,14 @@
 """LLM-driven structured extraction.
 Maps raw OCR text into the per-template JSON schema.
+
+Uses Google Gemini directly via the official ``google-genai`` SDK (free tier,
+generous quotas) when ``GEMINI_API_KEY`` is configured.  Falls back to the
+Emergent Universal Key (paid, budgeted) when only ``EMERGENT_LLM_KEY`` is
+available — that path remains so existing deployments keep working.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -10,11 +16,26 @@ import re
 import uuid
 from typing import Any, Dict
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
-
 from .templates import get_template
 
 logger = logging.getLogger(__name__)
+
+# Lazy-imported SDKs (don't blow up on import if either is missing).
+try:  # google-genai is the preferred path (free tier).
+    from google import genai as _google_genai
+    from google.genai import types as _google_genai_types
+except Exception:  # noqa: BLE001
+    _google_genai = None
+    _google_genai_types = None
+
+try:  # Emergent universal key is the fallback path.
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+except Exception:  # noqa: BLE001
+    LlmChat = None  # type: ignore
+    UserMessage = None  # type: ignore
+
+
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 
 def _schema_hint(document_type: str) -> str:
@@ -84,13 +105,15 @@ def _classify_llm_error(exc: Exception) -> str:
     msg = str(exc) or exc.__class__.__name__
     low = msg.lower()
     if "budget has been exceeded" in low or "max budget" in low:
-        return "LLM service budget exhausted — top up your Emergent Universal Key and click Retry."
-    if "rate limit" in low or "429" in low:
+        return "LLM service budget exhausted — top up your API key (or switch to a free Gemini key) and click Retry."
+    if "quota" in low and ("exceed" in low or "exhaust" in low):
+        return "LLM free-tier quota reached for the day — wait a bit and click Retry, or switch keys."
+    if "rate limit" in low or "429" in low or "resource_exhausted" in low:
         return "LLM service rate-limited — wait a moment and click Retry."
     if "timeout" in low or "timed out" in low:
         return "LLM service timed out — click Retry to try again."
-    if "unauthorized" in low or "invalid api key" in low or "401" in low:
-        return "LLM service rejected the API key — check your Emergent Universal Key and click Retry."
+    if "unauthorized" in low or "invalid api key" in low or "api_key_invalid" in low or "401" in low:
+        return "LLM service rejected the API key — check GEMINI_API_KEY (or EMERGENT_LLM_KEY) and click Retry."
     # Generic fallback: keep the first 180 chars so logs stay useful but the
     # banner isn't a wall of text.
     return f"Extraction failed: {msg[:180]}"
@@ -166,43 +189,98 @@ def _safe_json_load(raw: str) -> Dict[str, Any] | None:
     return None
 
 
+async def _call_gemini_direct(
+    document_type: str, snippet: str, api_key: str
+) -> str:
+    """Invoke Gemini via the official google-genai SDK.
+
+    Uses ``response_mime_type='application/json'`` which constrains the model
+    to emit valid JSON — eliminates the trailing-comma / fence parsing dance
+    we needed for unconstrained chat output.
+    Runs the sync SDK call inside a thread so we don't block the event loop.
+    """
+    if _google_genai is None or _google_genai_types is None:
+        raise ExtractionError(
+            "Extraction failed: google-genai SDK is not installed on the server.",
+            kind="missing_sdk",
+        )
+
+    def _invoke() -> str:
+        client = _google_genai.Client(api_key=api_key)
+        cfg = _google_genai_types.GenerateContentConfig(
+            system_instruction=_system_prompt(document_type),
+            response_mime_type="application/json",
+            temperature=0.0,
+            max_output_tokens=4096,
+        )
+        resp = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[f"OCR TEXT:\n{snippet}"],
+            config=cfg,
+        )
+        return getattr(resp, "text", "") or ""
+
+    return await asyncio.to_thread(_invoke)
+
+
+async def _call_emergent_fallback(
+    document_type: str, snippet: str, api_key: str
+) -> str:
+    """Invoke the Emergent Universal Key path (legacy/fallback)."""
+    if LlmChat is None or UserMessage is None:
+        raise ExtractionError(
+            "Extraction failed: emergentintegrations SDK is not installed.",
+            kind="missing_sdk",
+        )
+    chat = LlmChat(
+        api_key=api_key,
+        session_id=f"extract-{uuid.uuid4()}",
+        system_message=_system_prompt(document_type),
+    ).with_model("gemini", GEMINI_MODEL)
+    return await chat.send_message(UserMessage(text=f"OCR TEXT:\n{snippet}"))
+
+
 async def extract_structured(document_type: str, raw_text: str) -> Dict[str, Any]:
     if document_type == "OTHER" or not raw_text:
         return _empty_payload()
 
-    api_key = os.environ.get("EMERGENT_LLM_KEY")
-    if not api_key:
-        logger.warning("EMERGENT_LLM_KEY missing; raising ExtractionError")
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    emergent_key = os.environ.get("EMERGENT_LLM_KEY")
+
+    if not gemini_key and not emergent_key:
+        logger.warning("No LLM key configured (GEMINI_API_KEY/EMERGENT_LLM_KEY)")
         raise ExtractionError(
-            "Extraction failed: EMERGENT_LLM_KEY is not configured on the server.",
+            "Extraction failed: no LLM API key is configured on the server "
+            "(set GEMINI_API_KEY for the free Gemini tier, or EMERGENT_LLM_KEY).",
             kind="missing_key",
         )
 
     # Bound memory: the LLM SDK buffers the full response, so don't feed it
     # an enormous prompt.  12k chars covers virtually every quote/PO/invoice.
     snippet = (raw_text or "")[:12000]
+    provider = "gemini-direct" if gemini_key else "emergent"
 
     try:
-        chat = LlmChat(
-            api_key=api_key,
-            session_id=f"extract-{uuid.uuid4()}",
-            system_message=_system_prompt(document_type),
-        ).with_model("gemini", "gemini-2.5-flash")
-        resp = await chat.send_message(UserMessage(text=f"OCR TEXT:\n{snippet}"))
+        if gemini_key:
+            resp = await _call_gemini_direct(document_type, snippet, gemini_key)
+        else:
+            resp = await _call_emergent_fallback(document_type, snippet, emergent_key)
+    except ExtractionError:
+        raise
     except Exception as exc:  # noqa: BLE001
         # Network blips, rate limits, budget exhaustion, model errors, etc.
-        # We surface this to the caller as a typed ExtractionError so the
-        # pipeline can mark the document FAILED and show a banner.  The
-        # previous behaviour (returning an empty payload silently) left users
-        # staring at a blank Review form with no clue why.
+        # Surface as ExtractionError so the pipeline marks doc FAILED and
+        # the Review banner can tell the user what went wrong.
         friendly = _classify_llm_error(exc)
-        logger.warning("LLM call failed for %s: %s", document_type, exc)
+        logger.warning("LLM call (%s) failed for %s: %s", provider, document_type, exc)
         raise ExtractionError(friendly) from exc
 
     parsed = _safe_json_load(resp or "")
     if not isinstance(parsed, dict):
-        logger.error("LLM returned non-parseable JSON for %s: %s",
-                     document_type, (resp or "")[:200])
+        logger.error(
+            "LLM (%s) returned non-parseable JSON for %s: %s",
+            provider, document_type, (resp or "")[:200],
+        )
         raise ExtractionError(
             "Extraction failed: LLM response could not be parsed as JSON. Click Retry to try again.",
             kind="parse_error",
