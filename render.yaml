@@ -53,6 +53,19 @@ services:
         sync: false
       - key: RESEND_FROM_EMAIL
         sync: false
+      # ── Cloudflare R2 object storage (persistent PDF uploads) ──
+      # Set these in the Render dashboard. If any one is blank, the
+      # backend falls back to ephemeral local disk (uploads lost on redeploy).
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_ENDPOINT_URL
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_KEY_PREFIX
+        value: documents
 
   # ────────────────────────────────────────────────────────────────────
   # React static frontend

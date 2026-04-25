@@ -38,6 +38,7 @@ from services.email_service import (
 from services.extraction_service import extract_structured
 from services.ocr_service import extract_text_from_pdf
 from services.pdf_service import render_document_pdf
+from services import storage_service
 from services.templates import (
     DEFAULT_TEMPLATES, get_template, is_builtin, list_templates,
     remove_runtime_template, set_runtime_templates, upsert_runtime_template,
@@ -47,6 +48,8 @@ from services.templates import (
 
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+TMP_DIR = ROOT_DIR / "tmp"
+TMP_DIR.mkdir(exist_ok=True)
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -535,10 +538,22 @@ async def _save_upload(file: UploadFile, owner: dict) -> Dict[str, Any]:
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
     doc_id = str(uuid.uuid4())
+    # Stream-write to a local staging file first so bulk uploads don't
+    # buffer the whole PDF in memory.  When R2 is configured we then push
+    # the staged file to R2 and let `_run_pipeline` consume it locally
+    # before deleting it (saves a redundant round-trip).
     dest = UPLOAD_DIR / f"{doc_id}.pdf"
     async with aiofiles.open(dest, "wb") as out:
         while chunk := await file.read(1024 * 1024):
             await out.write(chunk)
+    if storage_service.R2_CONFIGURED:
+        try:
+            await storage_service.put_pdf_from_path(doc_id, dest)
+        except Exception as exc:  # noqa: BLE001
+            # Roll back the stub file so we don't leak ephemeral disk on Render.
+            dest.unlink(missing_ok=True)
+            logger.exception("R2 upload failed for %s: %s", doc_id, exc)
+            raise HTTPException(status_code=502, detail="Storage upload failed") from exc
     doc = DocumentModel(
         id=doc_id, filename=file.filename, file_url=f"/api/documents/{doc_id}/file",
         status="UPLOADED", source="AUTO",
@@ -552,10 +567,14 @@ async def _save_upload(file: UploadFile, owner: dict) -> Dict[str, Any]:
 
 async def _run_pipeline(doc_id: str) -> None:
     """Synchronous pipeline runner used by both sync & background processing."""
-    file_path = UPLOAD_DIR / f"{doc_id}.pdf"
-    if not file_path.exists():
+    # Locate the PDF — prefer the staging copy left by `_save_upload`; otherwise
+    # pull a fresh copy from R2 into ``tmp/``.  The temp copy is deleted in the
+    # ``finally`` block so the ephemeral container disk stays clean.
+    located = await storage_service.ensure_local_copy(doc_id, TMP_DIR)
+    if located is None:
         await db.documents.update_one({"id": doc_id}, {"$set": {"status": "FAILED"}})
         return
+    file_path, is_temp = located
     try:
         await db.documents.update_one({"id": doc_id}, {"$set": {"status": "PROCESSING"}})
         raw_text, ocr_method = extract_text_from_pdf(file_path)
@@ -578,6 +597,15 @@ async def _run_pipeline(doc_id: str) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Pipeline failed for %s: %s", doc_id, exc)
         await db.documents.update_one({"id": doc_id}, {"$set": {"status": "FAILED"}})
+    finally:
+        # Clean up the local copy on Render — R2 is the source of truth.
+        # When R2 is unconfigured we leave the file in place so it remains
+        # downloadable.
+        if storage_service.R2_CONFIGURED and file_path.exists():
+            try:
+                file_path.unlink()
+            except OSError:
+                pass
 
 
 @api_router.post("/documents/upload")
@@ -777,12 +805,8 @@ async def review_document(doc_id: str, payload: ReviewPayload, user: dict = Depe
 @api_router.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str, user: dict = Depends(require_min_role("user"))):
     existing = await _get_doc_checked(doc_id, user)
-    file_path = UPLOAD_DIR / f"{doc_id}.pdf"
-    if file_path.exists():
-        try:
-            file_path.unlink()
-        except OSError:
-            pass
+    # Removes both the local copy (if any) and the R2 object.
+    await storage_service.delete_pdf(doc_id)
     await db.documents.delete_one({"id": doc_id})
     await log_from_user(
         db, user,
@@ -813,7 +837,19 @@ async def create_manual_document(payload: CreateDocumentPayload, user: dict = De
 
 @api_router.get("/documents/{doc_id}/file")
 async def get_document_file(doc_id: str, user: dict = Depends(get_current_user)):
-    await _get_doc_checked(doc_id, user)
+    doc = await _get_doc_checked(doc_id, user)
+    # Prefer redirecting to a short-lived presigned R2 URL — saves backend
+    # bandwidth and serves directly from Cloudflare's edge.
+    if storage_service.R2_CONFIGURED:
+        url = await storage_service.presigned_get_url(
+            doc_id,
+            filename=doc.get("filename") or f"{doc_id}.pdf",
+            expires=600,
+        )
+        if url:
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=url, status_code=307)
+    # Local-disk fallback (dev / unconfigured)
     file_path = UPLOAD_DIR / f"{doc_id}.pdf"
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -903,6 +939,11 @@ async def on_startup():
 
     # Load admin-defined template overrides into the runtime overlay
     await _refresh_templates_from_db()
+
+    # Log which storage backend is active so it's visible in Render logs.
+    logger.info("Storage backend: %s%s",
+                storage_service.backend_name(),
+                f" (bucket={os.environ.get('R2_BUCKET_NAME')})" if storage_service.R2_CONFIGURED else "")
 
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "").lower().strip()

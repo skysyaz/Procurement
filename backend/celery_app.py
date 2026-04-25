@@ -35,18 +35,25 @@ def process_document_task(self, doc_id: str) -> str:  # noqa: ARG001
     from services.classification_service import classify
     from services.extraction_service import extract_structured
     from services.ocr_service import extract_text_from_pdf
+    from services import storage_service
 
     mongo_url = os.environ["MONGO_URL"]
     client = AsyncIOMotorClient(mongo_url)
     db = client[os.environ["DB_NAME"]]
 
-    file_path = ROOT_DIR / "uploads" / f"{doc_id}.pdf"
+    tmp_dir = ROOT_DIR / "tmp"
+    tmp_dir.mkdir(exist_ok=True)
 
     async def _run():
         from datetime import datetime, timezone
-        if not file_path.exists():
+
+        # Worker may be a *separate* container from the API — never assume the
+        # PDF is on local disk. Pull from R2 (with local-disk fallback for dev).
+        located = await storage_service.ensure_local_copy(doc_id, tmp_dir)
+        if located is None:
             await db.documents.update_one({"id": doc_id}, {"$set": {"status": "FAILED"}})
             return "missing-file"
+        file_path, is_temp = located
         try:
             await db.documents.update_one({"id": doc_id}, {"$set": {"status": "PROCESSING"}})
             raw_text, ocr_method = extract_text_from_pdf(file_path)
@@ -70,6 +77,12 @@ def process_document_task(self, doc_id: str) -> str:  # noqa: ARG001
             logger.exception("Celery pipeline failed for %s: %s", doc_id, exc)
             await db.documents.update_one({"id": doc_id}, {"$set": {"status": "FAILED"}})
             raise
+        finally:
+            if storage_service.R2_CONFIGURED and file_path.exists():
+                try:
+                    file_path.unlink()
+                except OSError:
+                    pass
 
     try:
         return asyncio.run(_run())
