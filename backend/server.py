@@ -38,6 +38,8 @@ from services.email_service import (
 from services.extraction_service import extract_structured, ExtractionError
 from services.ocr_service import extract_text_from_pdf
 from services.pdf_service import render_document_pdf
+from services.report_pdf_service import render_report_pdf
+from services.reports_service import dashboard_summary, reports_summary
 from services import storage_service
 from services.templates import (
     DEFAULT_TEMPLATES, get_template, is_builtin, list_templates,
@@ -532,6 +534,54 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     return {"total": total, "by_type": by_type, "by_status": by_status, "recent": recent}
 
 
+@api_router.get("/dashboard/summary")
+async def dashboard_summary_endpoint(user: dict = Depends(get_current_user)):
+    """Rich dashboard payload: KPIs, monthly volume, spend by type, top vendors."""
+    payload = await dashboard_summary(db, user)
+    # Serialize trimmed recent docs (already lean).
+    payload["recent"] = [_serialize(d) for d in payload.get("recent", [])]
+    return payload
+
+
+@api_router.get("/reports/summary")
+async def reports_summary_endpoint(
+    user: dict = Depends(get_current_user),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    type: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+):
+    return await reports_summary(
+        db, user,
+        date_from=date_from, date_to=date_to,
+        doc_type=type, status=status,
+    )
+
+
+@api_router.get("/reports/pdf")
+async def reports_pdf_endpoint(
+    user: dict = Depends(get_current_user),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    type: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+):
+    summary = await reports_summary(
+        db, user,
+        date_from=date_from, date_to=date_to,
+        doc_type=type, status=status,
+    )
+    pdf_bytes = render_report_pdf(summary)
+    safe_from = (date_from or "all").replace("/", "-")
+    safe_to = (date_to or "all").replace("/", "-")
+    fname = f"procureflow-report-{safe_from}-to-{safe_to}.pdf"
+    return FastResponse(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Document upload / process
 # ---------------------------------------------------------------------------
@@ -934,7 +984,17 @@ def _reference_of(doc: Dict[str, Any]) -> str:
 
 def _render_pdf_or_400(doc: Dict[str, Any]) -> bytes:
     try:
-        return render_document_pdf(doc.get("type", "OTHER"), doc.get("extracted_data") or {})
+        # Only apply Quatriz company branding to MANUAL documents (the user
+        # creates them, so they're "ours"). For AUTO/uploaded documents that
+        # came from third parties (Umobile, etc.) we render a neutral
+        # "extracted form" — never overwrite their original branding.
+        is_owned = (doc.get("source") or "").upper() == "MANUAL"
+        return render_document_pdf(
+            doc.get("type", "OTHER"),
+            doc.get("extracted_data") or {},
+            branded=is_owned,
+            source_filename=doc.get("filename"),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

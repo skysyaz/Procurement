@@ -85,3 +85,38 @@ html, body {
         --radius: 0.125rem;
     }
 }
+
+/* ------------------------------------------------------------------
+   Print stylesheet
+   When the user clicks "Print" on the Reports page (or browser File →
+   Print), strip all chrome (sidebar, page nav, toolbars) so only the
+   report content shows up on paper.  The print: utility classes inline
+   on the Reports page hide their own header/filters block.
+   ------------------------------------------------------------------ */
+@media print {
+  body {
+    background: white !important;
+  }
+  /* Sidebar + any topbar */
+  aside, nav.global-topbar, .pf-noprint {
+    display: none !important;
+  }
+  /* Make main content full-width and remove its scroll constraints */
+  main {
+    overflow: visible !important;
+    height: auto !important;
+  }
+  /* Cards: drop borders/shadows so they don't waste ink */
+  .pf-surface {
+    border: none !important;
+    box-shadow: none !important;
+    background: white !important;
+    page-break-inside: avoid;
+  }
+  /* Buttons / interactive things */
+  button, a.pf-btn, .pf-btn { display: none !important; }
+  /* Tables: keep ink-conservative borders */
+  table { page-break-inside: auto; }
+  tr { page-break-inside: avoid; page-break-after: auto; }
+  thead { display: table-header-group; }
+}

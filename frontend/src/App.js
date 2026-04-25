@@ -9,6 +9,7 @@ import DocumentList from "./pages/DocumentList";
 import CreateDocument from "./pages/CreateDocument";
 import Templates from "./pages/Templates";
 import Review from "./pages/Review";
+import Reports from "./pages/Reports";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import ForgotPassword from "./pages/ForgotPassword";
@@ -58,6 +59,7 @@ export default function App() {
             <Route path="/documents" element={<Protected><DocumentList /></Protected>} />
             <Route path="/create" element={<Protected minRole="user"><CreateDocument /></Protected>} />
             <Route path="/templates" element={<Protected><Templates /></Protected>} />
+            <Route path="/reports" element={<Protected><Reports /></Protected>} />
             <Route path="/review/:id" element={<Protected><Review /></Protected>} />
 
             <Route path="/admin/users" element={<Protected minRole="admin"><AdminUsers /></Protected>} />

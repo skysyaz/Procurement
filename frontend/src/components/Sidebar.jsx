@@ -2,7 +2,7 @@ import React from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   GridFour, UploadSimple, FileText, PlusCircle, Receipt, Cube,
-  Users, ListBullets, SignOut, PencilRuler,
+  Users, ListBullets, SignOut, PencilRuler, ChartBar,
 } from "@phosphor-icons/react";
 import { useAuth, can } from "../lib/auth";
 
@@ -12,6 +12,7 @@ const LINKS = [
   { to: "/documents", label: "Documents", icon: FileText, minRole: "viewer" },
   { to: "/create", label: "Create Document", icon: PlusCircle, minRole: "user" },
   { to: "/templates", label: "Templates", icon: Cube, minRole: "viewer" },
+  { to: "/reports", label: "Reports", icon: ChartBar, minRole: "viewer" },
 ];
 
 const ADMIN_LINKS = [

@@ -1,10 +1,23 @@
-"""PDF generation for structured documents using ReportLab."""
+"""PDF generation for structured documents using ReportLab.
+
+Two render paths:
+
+* **branded** (``source == "MANUAL"``): full Quatriz template, modeled on the
+  reference quotation supplied by the customer — big logo top-left, title in a
+  bordered box top-right, structured To/Ref grid, item table with grid borders,
+  Sub-total / SST / Grand Total stack, Terms & Conditions box, signature
+  block, centered footer with Quatriz registration + address.
+* **neutral** (``source == "AUTO"``): re-rendered extract for *uploaded*
+  third-party documents (e.g. a Umobile invoice).  We never overwrite the
+  original company's branding — we just render the fields we extracted in a
+  clean, plain layout titled "Extracted Form".
+"""
 from __future__ import annotations
 
 import io
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -12,6 +25,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     Image as RLImage,
+    KeepTogether,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -26,14 +40,30 @@ from .templates import get_template
 _BRAND_DIR = Path(__file__).resolve().parent.parent / "assets"
 LOGO_PATH = _BRAND_DIR / "quatriz_logo_pdf.png"
 
-# Allow override via env so deployments can swap the logo without code changes.
-COMPANY_NAME = os.environ.get("COMPANY_NAME", "QUATRIZ SDN BHD")
+# Allow override via env so deployments can swap the branding without code
+# changes.  Address uses ``|`` as a line separator.
+COMPANY_NAME = os.environ.get("COMPANY_NAME", "Quatriz System Sdn Bhd")
+COMPANY_REG = os.environ.get("COMPANY_REG", "988952-X")
 COMPANY_TAGLINE = os.environ.get("COMPANY_TAGLINE", "")
 COMPANY_ADDRESS = os.environ.get(
     "COMPANY_ADDRESS",
-    "",
+    "Lot G3, HIVE 8, Taman Teknologi MRANTI, 57000, Bukit Jalil, Kuala Lumpur",
 )
 
+# Constants shared by both paths.
+PAGE_W = 210 * mm
+LEFT = RIGHT = 18 * mm
+USABLE_W = PAGE_W - LEFT - RIGHT  # 174mm usable width
+
+NAVY = colors.HexColor("#0A2D5C")
+INK = colors.HexColor("#0A0A0B")
+MUTED = colors.HexColor("#52525B")
+RULE = colors.HexColor("#0A0A0B")
+SUBRULE = colors.HexColor("#9CA3AF")
+BG_HEAD = colors.HexColor("#0A0A0B")
+
+
+# ---- Helpers -----------------------------------------------------------------
 
 def _val(data: Dict[str, Any], key: str) -> str:
     v = data.get(key)
@@ -49,59 +79,322 @@ def _fmt_num(v: Any) -> str:
         return str(v or "")
 
 
-def _build_brand_header(title: str, styles) -> Table:
-    """Return a 2-column table: [logo + company info | document title].
+def _styles():
+    s = getSampleStyleSheet()
+    return {
+        "label": ParagraphStyle(
+            "Label", parent=s["Normal"], fontSize=7.5, leading=9,
+            textColor=MUTED, fontName="Helvetica-Bold",
+        ),
+        "value": ParagraphStyle(
+            "Value", parent=s["Normal"], fontSize=9, leading=12,
+            textColor=INK,
+        ),
+        "value_bold": ParagraphStyle(
+            "ValueBold", parent=s["Normal"], fontSize=9, leading=12,
+            textColor=INK, fontName="Helvetica-Bold",
+        ),
+        "small": ParagraphStyle(
+            "Small", parent=s["Normal"], fontSize=8, leading=10,
+            textColor=INK,
+        ),
+        "footer": ParagraphStyle(
+            "Footer", parent=s["Normal"], fontSize=8, leading=10,
+            textColor=MUTED, alignment=1,  # center
+        ),
+        "footer_bold": ParagraphStyle(
+            "FooterBold", parent=s["Normal"], fontSize=9, leading=11,
+            textColor=INK, alignment=1, fontName="Helvetica-Bold",
+        ),
+        "h1": ParagraphStyle(
+            "H1", parent=s["Heading1"], fontSize=16, leading=20,
+            textColor=INK, fontName="Helvetica-Bold", alignment=1,
+        ),
+        "neutral_title": ParagraphStyle(
+            "NeutralTitle", parent=s["Heading1"], fontSize=14, leading=18,
+            textColor=INK, fontName="Helvetica-Bold",
+        ),
+    }
 
-    Renders cleanly even if the logo file is missing (falls back to text).
+
+# ---- Branded layout (Quatriz quotation/PO/etc.) ------------------------------
+
+def _branded_top_band(title: str, st) -> Table:
+    """Logo on the left + bordered title box on the right.
+
+    The two cells share the same row so the bottom edge is a perfectly
+    straight line — no more zig-zag.
     """
-    company_style = ParagraphStyle(
-        "Company", parent=styles["Normal"], fontSize=11, leading=13,
-        textColor=colors.HexColor("#0A2D5C"), fontName="Helvetica-Bold",
-    )
-    addr_style = ParagraphStyle(
-        "CompanyAddr", parent=styles["Normal"], fontSize=8, leading=10,
-        textColor=colors.HexColor("#52525B"),
-    )
-    title_style = ParagraphStyle(
-        "DocTitle", parent=styles["Heading1"], fontSize=18, leading=22,
-        textColor=colors.HexColor("#0A0A0B"), alignment=2,  # right
-        fontName="Helvetica-Bold",
-    )
-
-    # Left cell: logo (if present) + company text.
-    left_cell: list = []
+    left_cell: List[Any] = []
     if LOGO_PATH.exists():
         try:
-            img = RLImage(str(LOGO_PATH), width=45 * mm, height=30 * mm, kind="proportional")
-            left_cell.append(img)
+            left_cell.append(RLImage(str(LOGO_PATH), width=55 * mm, height=22 * mm, kind="proportional"))
         except Exception:  # noqa: BLE001
-            pass
-    left_cell.append(Spacer(1, 4))
-    left_cell.append(Paragraph(COMPANY_NAME, company_style))
-    if COMPANY_TAGLINE:
-        left_cell.append(Paragraph(COMPANY_TAGLINE, addr_style))
-    if COMPANY_ADDRESS:
-        for line in COMPANY_ADDRESS.split("|"):
-            line = line.strip()
-            if line:
-                left_cell.append(Paragraph(line, addr_style))
+            left_cell.append(Paragraph(f"<b>{COMPANY_NAME}</b>", st["h1"]))
+    else:
+        left_cell.append(Paragraph(f"<b>{COMPANY_NAME}</b>", st["h1"]))
 
-    right_cell = [Paragraph(title.upper(), title_style)]
-
-    tbl = Table([[left_cell, right_cell]], colWidths=[105 * mm, 65 * mm])
-    tbl.setStyle(
+    right_box = Table(
+        [[Paragraph(title.upper(), st["h1"])]],
+        colWidths=[60 * mm],
+        rowHeights=[18 * mm],
+    )
+    right_box.setStyle(
         TableStyle(
             [
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("LINEBELOW", (0, 0), (-1, -1), 1.0, colors.HexColor("#0A2D5C")),
+                ("BOX", (0, 0), (-1, -1), 0.8, INK),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F5F5F4")),
             ]
         )
     )
+
+    band = Table(
+        [[left_cell, right_box]],
+        colWidths=[USABLE_W - 65 * mm, 65 * mm],
+    )
+    band.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (0, 0), "MIDDLE"),
+                ("VALIGN", (1, 0), (1, 0), "TOP"),
+                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    return band
+
+
+def _branded_party_block(header: Dict[str, Any], st) -> Table:
+    """Left column: To / Attn (client-facing). Right column: Ref / Date / Page."""
+    client_lines = [
+        Paragraph(f"<b>To</b> &nbsp;&nbsp;&nbsp; : {_val(header, 'client_name') or '—'}", st["small"]),
+    ]
+    addr = _val(header, "client_address")
+    if addr:
+        # Each comma-separated token on its own indented line.
+        for line in [p.strip() for p in addr.split(",") if p.strip()]:
+            client_lines.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{line}", st["small"]))
+    attn = _val(header, "attention") or _val(header, "attn")
+    if attn:
+        client_lines.append(Spacer(1, 4))
+        client_lines.append(Paragraph(f"<b>Attn</b> &nbsp; : {attn}", st["small"]))
+
+    ref_rows = []
+    for label, key in [
+        ("Ref No", "quotation_number"),
+        ("Ref No", "po_number"),
+        ("Ref No", "invoice_number"),
+        ("Ref No", "reference_number"),
+        ("SST No", "sst_number"),
+        ("Date", "date"),
+        ("Date", "po_date"),
+        ("Date", "invoice_date"),
+        ("Date", "quotation_date"),
+        ("Page(s)", "_page"),
+    ]:
+        v = _val(header, key) if key != "_page" else "1"
+        if not v:
+            continue
+        # Skip duplicates (e.g. ref keys) — only first one wins per label.
+        if any(r[0] == label for r in ref_rows):
+            continue
+        ref_rows.append([label, ":", v])
+
+    if not any(r[0] == "Page(s)" for r in ref_rows):
+        ref_rows.append(["Page(s)", ":", "1"])
+
+    ref_tbl = Table(ref_rows, colWidths=[18 * mm, 4 * mm, 50 * mm])
+    ref_tbl.setStyle(
+        TableStyle(
+            [
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 1),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]
+        )
+    )
+
+    block = Table(
+        [[client_lines, ref_tbl]],
+        colWidths=[USABLE_W * 0.55, USABLE_W * 0.45],
+    )
+    block.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    return block
+
+
+def _items_table(tpl: Dict[str, Any], items: List[Dict[str, Any]], st) -> Table:
+    cols = tpl["schema"]["item_columns"]
+    show_item_col = True
+
+    head: List[str] = []
+    if show_item_col:
+        head.append("ITEM")
+    for c in cols:
+        label = c["label"].upper()
+        if c.get("type") == "number" and c["key"] in ("unit_cost", "unit_rate", "amount", "total_cost", "subtotal"):
+            label = f"{label}\n(RM)"
+        head.append(label)
+
+    body: List[List[Any]] = []
+    for idx, it in enumerate(items, start=1):
+        row: List[Any] = []
+        if show_item_col:
+            row.append(str(idx))
+        for c in cols:
+            v = it.get(c["key"], "")
+            if c.get("type") == "number":
+                row.append(_fmt_num(v))
+            else:
+                row.append(Paragraph(str(v or ""), st["value"]))
+        body.append(row)
+
+    # Empty placeholder rows so the table looks substantial even with 1-2 items
+    while len(body) < 3:
+        empty: List[Any] = [""] * (len(cols) + (1 if show_item_col else 0))
+        body.append(empty)
+
+    col_widths = _item_col_widths(cols, has_item_col=show_item_col)
+    table = Table([head] + body, repeatRows=1, colWidths=col_widths)
+
+    style = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+        ("TEXTCOLOR", (0, 0), (-1, 0), INK),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8.5),
+        ("FONTSIZE", (0, 1), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("GRID", (0, 0), (-1, -1), 0.5, INK),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+    ]
+    # Right-align numeric columns (last 3 are typically qty, unit rate, amount).
+    if show_item_col:
+        # ITEM column centered
+        style.append(("ALIGN", (0, 1), (0, -1), "CENTER"))
+    # Find numeric col positions for right-align
+    numeric_idx = []
+    for i, c in enumerate(cols):
+        if c.get("type") == "number":
+            numeric_idx.append(i + (1 if show_item_col else 0))
+    for ni in numeric_idx:
+        style.append(("ALIGN", (ni, 1), (ni, -1), "RIGHT"))
+    table.setStyle(TableStyle(style))
+    return table
+
+
+def _totals_table(tpl: Dict[str, Any], totals: Dict[str, Any], cols_count: int) -> Table:
+    totals_cfg = tpl["schema"]["totals"]
+    if not totals_cfg:
+        return None  # type: ignore[return-value]
+
+    rows = []
+    for t in totals_cfg:
+        rows.append([t["label"].upper(), _fmt_num(totals.get(t["key"], ""))])
+
+    # Match width to the items table's right-most 2 columns approximately.
+    label_col = USABLE_W * 0.78
+    val_col = USABLE_W * 0.22
+
+    tbl = Table(rows, colWidths=[label_col, val_col])
+    style = [
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+        ("ALIGN", (0, 0), (0, -1), "RIGHT"),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.5, INK),
+        ("LINEABOVE", (0, 0), (-1, 0), 0.5, INK),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]
+    # Highlight the LAST row (Grand Total)
+    style.extend([
+        ("LINEBELOW", (0, -1), (-1, -1), 1.2, INK),
+        ("FONTSIZE", (0, -1), (-1, -1), 10),
+    ])
+    tbl.setStyle(TableStyle(style))
     return tbl
 
 
-def render_document_pdf(document_type: str, data: Dict[str, Any]) -> bytes:
+def _terms_block(header: Dict[str, Any], st) -> Table | None:
+    payment = _val(header, "payment_terms")
+    validity = _val(header, "price_validity")
+    if not (payment or validity):
+        return None
+
+    rows = []
+    if payment:
+        rows.append([Paragraph("Payment Term", st["small"]), Paragraph(payment, st["small"])])
+    if validity:
+        rows.append([Paragraph("Price Validity", st["small"]), Paragraph(validity, st["small"])])
+
+    inner = Table(rows, colWidths=[35 * mm, 95 * mm])
+    inner.setStyle(
+        TableStyle(
+            [
+                ("GRID", (0, 0), (-1, -1), 0.4, INK),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+
+    label_cell = Paragraph("<b>TERMS AND<br/>CONDITIONS</b>", st["small"])
+    outer = Table([[label_cell, inner]], colWidths=[35 * mm, 130 * mm])
+    outer.setStyle(
+        TableStyle(
+            [
+                ("BOX", (0, 0), (0, 0), 0.4, INK),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (0, 0), "CENTER"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    return outer
+
+
+def _signature_footer(header: Dict[str, Any], st) -> Table:
+    issued_by = _val(header, "issued_by") or "—"
+    sig = Paragraph(
+        f"<br/><br/><br/><b>{issued_by}</b><br/>"
+        f"<font size=8 color='#52525B'>Authorised Signatory</font>",
+        st["small"],
+    )
+    return Table(
+        [[sig, ""]],
+        colWidths=[80 * mm, 90 * mm],
+    )
+
+
+def _render_branded(document_type: str, data: Dict[str, Any]) -> bytes:
     tpl = get_template(document_type)
     if not tpl:
         raise ValueError(f"Unknown document type: {document_type}")
@@ -111,36 +404,119 @@ def render_document_pdf(document_type: str, data: Dict[str, Any]) -> bytes:
     totals = data.get("totals", {}) or {}
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(
+    pdf = SimpleDocTemplate(
         buf,
         pagesize=A4,
-        leftMargin=18 * mm,
-        rightMargin=18 * mm,
+        leftMargin=LEFT,
+        rightMargin=RIGHT,
         topMargin=14 * mm,
-        bottomMargin=18 * mm,
+        bottomMargin=20 * mm,
         title=f"{tpl['label']} - {COMPANY_NAME}",
     )
 
-    styles = getSampleStyleSheet()
-    label_style = ParagraphStyle(
-        "Label", parent=styles["Normal"], fontSize=8, leading=10,
-        textColor=colors.HexColor("#52525B"),
-    )
-    value_style = ParagraphStyle(
-        "Value", parent=styles["Normal"], fontSize=10, leading=13,
-        textColor=colors.HexColor("#0A0A0B"),
-    )
+    st = _styles()
+    story: List[Any] = []
+    story.append(_branded_top_band(tpl["label"], st))
+    story.append(Spacer(1, 6))
+    story.append(_branded_party_block(header, st))
 
-    story = [_build_brand_header(tpl["label"], styles), Spacer(1, 10)]
+    # TITLE row
+    title_v = _val(header, "title") or _val(header, "subject") or _val(header, "description")
+    if title_v:
+        story.append(
+            Paragraph(
+                f"<b>TITLE</b> &nbsp;: &nbsp;{title_v}", st["small"],
+            )
+        )
+        story.append(Spacer(1, 6))
 
-    # Header fields in a two-column grid
+    story.append(_items_table(tpl, items, st))
+    tot = _totals_table(tpl, totals, len(tpl["schema"]["item_columns"]))
+    if tot is not None:
+        story.append(tot)
+
+    terms = _terms_block(header, st)
+    if terms is not None:
+        story.append(Spacer(1, 12))
+        story.append(terms)
+
+    story.append(Spacer(1, 18))
+    story.append(_signature_footer(header, st))
+
+    def _draw_footer(canvas, _doc):
+        canvas.saveState()
+        # Centered company line at the bottom of every page.
+        canvas.setFont("Helvetica-Bold", 9)
+        canvas.setFillColor(INK)
+        line1 = f"{COMPANY_NAME} ({COMPANY_REG})" if COMPANY_REG else COMPANY_NAME
+        canvas.drawCentredString(PAGE_W / 2, 14 * mm, line1)
+        if COMPANY_ADDRESS:
+            canvas.setFont("Helvetica", 8)
+            canvas.setFillColor(MUTED)
+            for i, line in enumerate(COMPANY_ADDRESS.split("|")):
+                line = line.strip()
+                if not line:
+                    continue
+                canvas.drawCentredString(PAGE_W / 2, (10 - i * 3.5) * mm, line)
+        # Page number top-right (small)
+        canvas.setFont("Helvetica", 7.5)
+        canvas.setFillColor(MUTED)
+        canvas.drawRightString(PAGE_W - RIGHT, 297 * mm - 8 * mm, f"Page {_doc.page}")
+        canvas.restoreState()
+
+    pdf.build(story, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
+    return buf.getvalue()
+
+
+# ---- Neutral layout (uploaded third-party docs) ------------------------------
+
+def _render_neutral(
+    document_type: str, data: Dict[str, Any], source_filename: str | None
+) -> bytes:
+    """Render the extracted data without any Quatriz branding.
+
+    Used for third-party uploaded PDFs (e.g. Umobile invoices) — we never
+    overwrite the original company's branding by stamping ours on top.  The
+    output is a clean "Extracted Form" recap of the structured fields we
+    pulled out, so the user can compare against the original.
+    """
+    tpl = get_template(document_type)
+    if not tpl:
+        raise ValueError(f"Unknown document type: {document_type}")
+
+    header = data.get("header", {}) or {}
+    items = data.get("items", []) or []
+    totals = data.get("totals", {}) or {}
+
+    buf = io.BytesIO()
+    pdf = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=LEFT, rightMargin=RIGHT,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title=f"Extracted Form - {tpl['label']}",
+    )
+    st = _styles()
+    story: List[Any] = []
+
+    story.append(Paragraph(f"EXTRACTED {tpl['label'].upper()}", st["neutral_title"]))
+    if source_filename:
+        story.append(Paragraph(f"<font color='#6B7280'>Source file: {source_filename}</font>", st["small"]))
+    story.append(Paragraph(
+        "<font color='#6B7280' size=8><i>This document recap was generated from the original third-party "
+        "PDF. The original branding and formatting belong to the issuing party.</i></font>",
+        st["small"],
+    ))
+    story.append(Spacer(1, 12))
+
+    # Header fields in a clean 2-col table (no fancy branding)
     header_fields = tpl["schema"]["header_fields"]
     rows = []
     pair: list = []
     for f in header_fields:
         cell = [
-            Paragraph(f["label"].upper(), label_style),
-            Paragraph(_val(header, f["key"]) or "—", value_style),
+            Paragraph(f["label"].upper(), st["label"]),
+            Paragraph(_val(header, f["key"]) or "—", st["value"]),
         ]
         pair.append(cell)
         if len(pair) == 2:
@@ -148,95 +524,67 @@ def render_document_pdf(document_type: str, data: Dict[str, Any]) -> bytes:
             pair = []
     if pair:
         rows.append([pair[0], ""])
-
     if rows:
-        header_table = Table(rows, colWidths=[85 * mm, 85 * mm])
-        header_table.setStyle(
-            TableStyle(
-                [
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-                    ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.HexColor("#E5E7EB")),
-                ]
-            )
-        )
-        story.append(header_table)
+        h_tbl = Table(rows, colWidths=[USABLE_W / 2, USABLE_W / 2])
+        h_tbl.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.HexColor("#E5E7EB")),
+        ]))
+        story.append(h_tbl)
         story.append(Spacer(1, 12))
 
-    # Items table
-    cols = tpl["schema"]["item_columns"]
-    head_row = [c["label"] for c in cols]
-    body = []
-    for it in items:
-        row = []
-        for c in cols:
-            v = it.get(c["key"], "")
-            if c.get("type") == "number":
-                row.append(_fmt_num(v))
-            else:
-                row.append(Paragraph(str(v or ""), value_style))
-        body.append(row)
-
-    if body:
-        table = Table([head_row] + body, repeatRows=1, colWidths=_item_col_widths(cols))
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0A0A0B")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#E5E7EB")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ALIGN", (-3, 1), (-1, -1), "RIGHT"),
-                ]
-            )
-        )
-        story.append(table)
-        story.append(Spacer(1, 10))
+    # Items
+    if items:
+        story.append(_items_table(tpl, items, st))
 
     # Totals
-    totals_cfg = tpl["schema"]["totals"]
-    if totals_cfg:
-        t_rows = [[t["label"], _fmt_num(totals.get(t["key"], ""))] for t in totals_cfg]
-        t_table = Table(t_rows, colWidths=[140 * mm, 30 * mm], hAlign="RIGHT")
-        t_table.setStyle(
-            TableStyle(
-                [
-                    ("FONTSIZE", (0, 0), (-1, -1), 10),
-                    ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                    ("LINEABOVE", (0, -1), (-1, -1), 0.8, colors.HexColor("#0A0A0B")),
-                    ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
-                ]
-            )
-        )
-        story.append(t_table)
+    tot = _totals_table(tpl, totals, len(tpl["schema"]["item_columns"]))
+    if tot is not None:
+        story.append(tot)
 
-    # Footer terms for quotation
-    if document_type == "QUOTATION":
-        story.append(Spacer(1, 14))
-        story.append(Paragraph("<b>TERMS AND CONDITIONS</b>", value_style))
-        story.append(Paragraph(f"Payment Term: {header.get('payment_terms') or '—'}", value_style))
-        story.append(Paragraph(f"Price Validity: {header.get('price_validity') or '—'}", value_style))
-        story.append(Spacer(1, 18))
-        story.append(Paragraph(f"Issued by: {header.get('issued_by') or '—'}", value_style))
-
-    doc.build(story)
+    pdf.build(story)
     return buf.getvalue()
 
 
-def _item_col_widths(cols):
-    # Give description the most space
-    total = 170 * mm
+# ---- Public entry point ------------------------------------------------------
+
+def render_document_pdf(
+    document_type: str,
+    data: Dict[str, Any],
+    *,
+    branded: bool = True,
+    source_filename: str | None = None,
+) -> bytes:
+    if branded:
+        return _render_branded(document_type, data)
+    return _render_neutral(document_type, data, source_filename)
+
+
+# ---- Column-width helper -----------------------------------------------------
+
+def _item_col_widths(cols, has_item_col: bool = False):
+    """Distribute available width across item-table columns.
+
+    Description gets the lion's share; numeric columns are narrower so the
+    digits aren't lost in big cells.  Adds an ITEM column up front when
+    the branded layout asks for it.
+    """
+    total = USABLE_W
     weights = []
+    if has_item_col:
+        weights.append(0.7)
     for c in cols:
         if c["key"] == "description":
-            weights.append(3.5)
-        elif c["key"] in ("amount", "total_cost", "unit_cost", "unit_rate"):
-            weights.append(1.2)
+            weights.append(4.5)
+        elif c["key"] in ("amount", "total_cost"):
+            weights.append(1.4)
+        elif c["key"] in ("unit_cost", "unit_rate"):
+            weights.append(1.4)
+        elif c["key"] in ("quantity", "qty"):
+            weights.append(1.0)
+        elif c["key"] == "unit":
+            weights.append(1.0)
         else:
             weights.append(1.0)
     s = sum(weights)

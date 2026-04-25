@@ -102,9 +102,33 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "(1) Add Quatriz company logo + branded header to all generated PDFs (PO, PR, DO, Quotation, Invoice). (2) Fix the huge empty gap on the Review page when viewing in Chrome desktop-mode on a phone (viewport ~980-1023px). Phase 2 to follow: Reports page with print-to-PDF and a redesigned Dashboard."
+user_problem_statement: "Phase 2: redesign the Dashboard with KPI cards + monthly volume chart + spend by type + top vendors (matching the reference image style), build a new Reports page with date/type/status filters + vendor breakdown + filtered docs list + Print button + Download PDF (with Quatriz branding), and ensure all PDFs only stamp the Quatriz logo on MANUAL-source documents (never overwrite branding on uploaded third-party PDFs)."
 
 frontend:
+  - task: "Dashboard redesign — KPI cards, monthly chart, spend by type, top vendors"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/Dashboard.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Replaced the old 4-stat-cell Dashboard with a fully responsive layout: 4 KPI cards (Total Documents, Pending Approvals, Pipeline Value, Completed This Month — 2 cols on mobile, 4 on lg+), Runner status row (when admin), 2 charts side-by-side (Monthly Volume bar chart, Spend by Type) stacking on mobile, Recent Activity table + Top Vendors leaderboard, Documents-by-Type breakdown. All cards respect the existing pf-surface design system. Reads from /api/dashboard/summary."
+
+  - task: "Reports page with filters + Print + Download PDF"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/Reports.jsx, frontend/src/App.js, frontend/src/components/Sidebar.jsx, frontend/src/index.css"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "New page at /reports (also added to sidebar nav). Filters: Type, Status, From, To dates (default = last 3 months). 4 KPI cards, Spend-by-Type horizontal bar list, Vendors-by-Spend table, Filtered Documents table. 'Print' button calls window.print() — added @media print stylesheet to index.css that strips the sidebar/buttons and adds a clean print-only header. 'Download PDF' calls /api/reports/pdf with the active filters and triggers a file download. All buttons hidden when printing via print:hidden Tailwind utility + CSS fallback."
+
   - task: "Review page responsive gap fix (phone-in-desktop-mode)"
     implemented: true
     working: "NA"
@@ -251,6 +275,30 @@ frontend:
           comment: "Tested on 2026-04-25. After logout, both access_token and refresh_token cookies are absent. Only Cloudflare cookies (cf_clearance, __cf_bm) remain. Cookie cleanup working correctly."
 
 backend:
+  - task: "Reports + Dashboard aggregations and PDF export"
+    implemented: true
+    working: true
+    file: "backend/services/reports_service.py, backend/services/report_pdf_service.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "New endpoints: GET /api/dashboard/summary (KPIs: total_documents, pending_approvals, pipeline_value, completed_value, completed_this_month + monthly_volume[6mo] + spend_by_type + top_vendors[5] + recent[8]). GET /api/reports/summary?from=&to=&type=&status= (kpis, vendors, by_type, monthly buckets, documents list). GET /api/reports/pdf?... returns a print-ready Procurement Report PDF using the same Quatriz brand template. All scoped to user role (admin/manager see all, others see owner-only). Aggregations done in Python after a single Mongo cursor for portability (avoids $expr type-juggling). Smoke-tested: report PDF (64KB) renders correctly with logo, KPI strip, Vendors-by-spend table, and Filtered Documents list — Gemini-Vision confirmed all layout checks pass."
+
+  - task: "Branded PDF only for MANUAL docs (not for uploaded third-party PDFs)"
+    implemented: true
+    working: true
+    file: "backend/services/pdf_service.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "render_document_pdf now takes branded=bool. _render_pdf_or_400 in server.py inspects doc.source — MANUAL → branded=True (full Quatriz template: logo top-left, bordered title top-right, To/Attn block, Ref/SST/Date grid, items table with grid borders, totals stack, terms & conditions box, signature space, centered footer with Quatriz registration + address). AUTO/uploaded → branded=False, neutral 'Extracted Form' rendering with the source filename and a disclaimer that the original branding belongs to the issuing party. This prevents overwriting third-party logos (e.g. Umobile invoices) when the user re-renders the extracted data. Both paths smoke-tested across all 5 doc templates."
+
   - task: "Quatriz logo + branded header on all generated PDFs"
     implemented: true
     working: true
@@ -333,8 +381,8 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Quatriz logo + branded header on all generated PDFs"
-    - "Review page responsive gap fix (phone-in-desktop-mode)"
+    - "Reports + Dashboard aggregations and PDF export"
+    - "Branded PDF only for MANUAL docs (not for uploaded third-party PDFs)"
   stuck_tasks:
     - "Auth flow - session persistence on reload"
   test_all: false
@@ -342,7 +390,7 @@ test_plan:
 
 agent_communication:
     - agent: "main"
-      message: "Phase 1 (branding + responsive fix) complete. Phase 2 (new Reports page with PDF export, Dashboard redesign matching the reference image) is queued — waiting for user confirmation that Phase 1 looks right on production before starting Phase 2."
+      message: "Phase 2 shipped: (1) PDF service split into branded (MANUAL) and neutral (AUTO/uploaded) paths so third-party docs like Umobile invoices NEVER get the Quatriz logo stamped on them. (2) Branded layout closely matches the user's reference: big logo top-left, bordered QUOTATION/PO box top-right, 2-col To/Ref grid, items table with full grid borders, Sub-total/SST/Grand Total stack with thicker bottom rule, Terms & Conditions box, signature line, centered footer with 'Quatriz System Sdn Bhd (988952-X)' + address. Gemini-Vision validated layout. (3) Dashboard fully redesigned with 4 KPI cards + Monthly chart + Spend by Type + Top Vendors + responsive at every breakpoint. (4) New Reports page at /reports with date/type/status filters, KPI strip, vendor breakdown, filtered docs list, Print button (browser print + clean print stylesheet), and Download PDF button (uses the same branded template). New endpoints: /api/dashboard/summary, /api/reports/summary, /api/reports/pdf — all role-scoped. NOT requesting frontend testing yet — will let user verify on their device first."
 
 agent_communication:
     - agent: "testing"
