@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -49,6 +50,29 @@ COMPANY_ADDRESS = os.environ.get(
     "COMPANY_ADDRESS",
     "Lot G3, HIVE 8, Taman Teknologi MRANTI, 57000, Bukit Jalil, Kuala Lumpur",
 )
+# Optional: override the bottom-right authorised-signatory designation/title
+COMPANY_SIGNATORY_TITLE = os.environ.get("COMPANY_SIGNATORY_TITLE", "Authorised Signatory")
+# Optional: invoice payment / banking details (rendered on INVOICE only).
+BANK_NAME = os.environ.get("BANK_NAME", "")
+BANK_ACCOUNT = os.environ.get("BANK_ACCOUNT", "")
+BANK_SWIFT = os.environ.get("BANK_SWIFT", "")
+
+
+def _sanitize_env(value: str) -> str:
+    """Defensively strip another env-var name accidentally pasted into this one.
+
+    On Render, users sometimes paste both ``COMPANY_REG`` and ``COMPANY_ADDRESS``
+    into a single field, leaving ``"988952-X, COMPANY_ADDRESS=Lot G3,..."`` in
+    the value.  Trim everything after a comma followed by ``WORD=`` so the
+    footer renders the registration number cleanly.
+    """
+    if not value:
+        return ""
+    return re.split(r",\s*[A-Z][A-Z_]*\s*=", value, maxsplit=1)[0].strip()
+
+
+COMPANY_REG = _sanitize_env(COMPANY_REG)
+COMPANY_ADDRESS = _sanitize_env(COMPANY_ADDRESS)
 
 # Constants shared by both paths.
 PAGE_W = 210 * mm
@@ -176,44 +200,63 @@ def _branded_top_band(title: str, st) -> Table:
     return band
 
 
-def _branded_party_block(header: Dict[str, Any], st) -> Table:
-    """Left column: To / Attn (client-facing). Right column: Ref / Date / Page."""
-    client_lines = [
-        Paragraph(f"<b>To</b> &nbsp;&nbsp;&nbsp; : {_val(header, 'client_name') or '—'}", st["small"]),
+# Per-doc-type "To" block configuration.
+# Each tuple: (left_label, name_key, address_key, attn_key)
+# `name_key` falls back to client_name → vendor_name → requester_name when
+# missing so older docs still render something instead of "—".
+_TO_TARGETS: Dict[str, tuple] = {
+    "QUOTATION": ("To",            "client_name",    "client_address",   "attention_person"),
+    "INVOICE":   ("Bill To",       "client_name",    "client_address",   "attention_person"),
+    "PO":        ("To (Supplier)", "vendor_name",    "vendor_address",   "attention_person"),
+    "PR":        ("Requested By",  "requester_name", "department",       None),
+    "DO":        ("Deliver To",    "client_name",    "delivery_address", "received_by"),
+}
+
+# Per-doc-type right-column reference rows (label, header_key).
+_REF_ROWS: Dict[str, List[tuple]] = {
+    "QUOTATION": [("Ref No", "quotation_number"), ("SST No", "sst_number"), ("Date", "date")],
+    "INVOICE":   [("Invoice No", "invoice_number"), ("Date", "invoice_date"), ("Due Date", "due_date"), ("PO Ref", "po_reference")],
+    "PO":        [("PO No", "po_number"), ("Date", "po_date"), ("Delivery Date", "delivery_date")],
+    "PR":        [("Request No", "request_number"), ("Date", "request_date"), ("Department", "department")],
+    "DO":        [("DO No", "delivery_number"), ("Date", "delivery_date"), ("Ref PO", "reference_po")],
+}
+
+
+def _branded_party_block(header: Dict[str, Any], st, doc_type: str = "") -> Table:
+    """Left column: addressee block (To/Bill To/etc). Right: Ref/Date/Page grid."""
+    cfg = _TO_TARGETS.get(doc_type.upper(), ("To", "client_name", "client_address", "attention_person"))
+    label, name_key, addr_key, attn_key = cfg
+
+    name = (
+        _val(header, name_key)
+        or _val(header, "client_name")
+        or _val(header, "vendor_name")
+        or _val(header, "requester_name")
+        or "—"
+    )
+    addr = _val(header, addr_key) or _val(header, "client_address") or _val(header, "vendor_address")
+    attn = _val(header, attn_key) if attn_key else (_val(header, "attention_person") or _val(header, "attn"))
+
+    client_lines: List[Any] = [
+        Paragraph(f"<b>{label}</b> &nbsp;: {name}", st["small"]),
     ]
-    addr = _val(header, "client_address")
     if addr:
-        # Each comma-separated token on its own indented line.
         for line in [p.strip() for p in addr.split(",") if p.strip()]:
             client_lines.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{line}", st["small"]))
-    attn = _val(header, "attention") or _val(header, "attn")
     if attn:
         client_lines.append(Spacer(1, 4))
         client_lines.append(Paragraph(f"<b>Attn</b> &nbsp; : {attn}", st["small"]))
 
-    ref_rows = []
-    for label, key in [
-        ("Ref No", "quotation_number"),
-        ("Ref No", "po_number"),
-        ("Ref No", "invoice_number"),
-        ("Ref No", "reference_number"),
-        ("SST No", "sst_number"),
-        ("Date", "date"),
-        ("Date", "po_date"),
-        ("Date", "invoice_date"),
-        ("Date", "quotation_date"),
-        ("Page(s)", "_page"),
-    ]:
-        v = _val(header, key) if key != "_page" else "1"
-        if not v:
-            continue
-        # Skip duplicates (e.g. ref keys) — only first one wins per label.
-        if any(r[0] == label for r in ref_rows):
-            continue
-        ref_rows.append([label, ":", v])
-
-    if not any(r[0] == "Page(s)" for r in ref_rows):
-        ref_rows.append(["Page(s)", ":", "1"])
+    # Right column: doc-type aware ref/date/page rows.
+    ref_rows: List[List[str]] = []
+    rows_cfg = _REF_ROWS.get(doc_type.upper(), [
+        ("Ref No", "reference_number"), ("Date", "date"),
+    ])
+    for row_label, key in rows_cfg:
+        v = _val(header, key)
+        if v:
+            ref_rows.append([row_label, ":", v])
+    ref_rows.append(["Page(s)", ":", "1"])
 
     ref_tbl = Table(ref_rows, colWidths=[18 * mm, 4 * mm, 50 * mm])
     ref_tbl.setStyle(
@@ -388,16 +431,134 @@ def _terms_block(header: Dict[str, Any], st) -> Table | None:
 
 
 def _signature_footer(header: Dict[str, Any], st) -> Table:
-    issued_by = _val(header, "issued_by") or "—"
+    issued_by = _val(header, "issued_by") or _val(header, "approved_by") or "—"
+    designation = (
+        _val(header, "issued_by_designation")
+        or _val(header, "signatory_designation")
+        or COMPANY_SIGNATORY_TITLE
+    )
     sig = Paragraph(
         f"<br/><br/><br/><b>{issued_by}</b><br/>"
-        f"<font size=8 color='#52525B'>Authorised Signatory</font>",
+        f"<font size=8 color='#52525B'>{designation}</font>",
         st["small"],
     )
     return Table(
         [[sig, ""]],
         colWidths=[80 * mm, 90 * mm],
     )
+
+
+# ---- Doc-type specific extra sections ----------------------------------------
+
+def _approval_block(header: Dict[str, Any], st) -> Table:
+    """3-cell approval grid for Purchase Requisitions."""
+    cells = []
+    for role_label, name_key, position_key in [
+        ("Requested By", "requester_name", "requester_position"),
+        ("Reviewed By", "reviewer_name", "reviewer_position"),
+        ("Approved By", "approver_name", "approver_position"),
+    ]:
+        name = _val(header, name_key) or "—"
+        position = _val(header, position_key) or ""
+        cells.append(
+            Paragraph(
+                f"<font size=8 color='#52525B'><b>{role_label}</b></font><br/><br/><br/><br/>"
+                f"<b>{name}</b><br/>"
+                f"<font size=8 color='#52525B'>{position}</font>",
+                st["small"],
+            )
+        )
+    third = USABLE_W / 3
+    tbl = Table([cells], colWidths=[third, third, third])
+    tbl.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.4, INK),
+        ("INNERGRID", (0, 0), (-1, -1), 0.3, INK),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+    ]))
+    return tbl
+
+
+def _do_receiver_block(header: Dict[str, Any], st) -> Table:
+    """Vehicle/driver + received-by signature box for Delivery Orders."""
+    rows = [
+        [Paragraph("<b>Vehicle No</b>", st["small"]),
+         Paragraph(_val(header, "vehicle_no") or "—", st["small"])],
+        [Paragraph("<b>Driver Name</b>", st["small"]),
+         Paragraph(_val(header, "driver_name") or "—", st["small"])],
+        [Paragraph("<b>Received By</b>", st["small"]),
+         Paragraph(
+             "<br/><br/><br/>" + (_val(header, "received_by") or "")
+             + "<br/><font size=8 color='#52525B'>Name &amp; Signature / Company Stamp</font>",
+             st["small"],
+         )],
+    ]
+    tbl = Table(rows, colWidths=[40 * mm, USABLE_W - 40 * mm])
+    tbl.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.4, INK),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return tbl
+
+
+def _invoice_bank_block(header: Dict[str, Any], st) -> Table | None:
+    """Optional bank/payment details box for Invoices.
+
+    Pulls from header fields first, then env vars (BANK_NAME / BANK_ACCOUNT /
+    BANK_SWIFT). Returns None when nothing is set so we don't render an empty
+    box.
+    """
+    bank = _val(header, "bank_name") or BANK_NAME
+    account = _val(header, "bank_account") or BANK_ACCOUNT
+    swift = _val(header, "bank_swift") or BANK_SWIFT
+    method = _val(header, "payment_method") or ("Bank Transfer" if (bank or account) else "")
+    if not (bank or account or swift or method):
+        return None
+
+    rows: List[List[Any]] = []
+    if method:
+        rows.append([Paragraph("<b>Payment Method</b>", st["small"]),
+                     Paragraph(method, st["small"])])
+    if bank:
+        rows.append([Paragraph("<b>Bank</b>", st["small"]),
+                     Paragraph(bank, st["small"])])
+    if account:
+        rows.append([Paragraph("<b>Account No.</b>", st["small"]),
+                     Paragraph(account, st["small"])])
+    if swift:
+        rows.append([Paragraph("<b>SWIFT / Branch</b>", st["small"]),
+                     Paragraph(swift, st["small"])])
+
+    inner = Table(rows, colWidths=[35 * mm, 95 * mm])
+    inner.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.4, INK),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+
+    label_cell = Paragraph("<b>PAYMENT<br/>DETAILS</b>", st["small"])
+    outer = Table([[label_cell, inner]], colWidths=[35 * mm, 130 * mm])
+    outer.setStyle(TableStyle([
+        ("BOX", (0, 0), (0, 0), 0.4, INK),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (0, 0), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return outer
 
 
 def _render_branded(document_type: str, data: Dict[str, Any]) -> bytes:
@@ -424,7 +585,7 @@ def _render_branded(document_type: str, data: Dict[str, Any]) -> bytes:
     story: List[Any] = []
     story.append(_branded_top_band(tpl["label"], st))
     story.append(Spacer(1, 6))
-    story.append(_branded_party_block(header, st))
+    story.append(_branded_party_block(header, st, document_type))
 
     # TITLE row
     title_v = _val(header, "title") or _val(header, "subject") or _val(header, "description")
@@ -445,6 +606,20 @@ def _render_branded(document_type: str, data: Dict[str, Any]) -> bytes:
     if terms is not None:
         story.append(Spacer(1, 12))
         story.append(terms)
+
+    # Doc-type specific extra sections (after totals + terms, before signature).
+    dtype_upper = document_type.upper()
+    if dtype_upper == "PR":
+        story.append(Spacer(1, 14))
+        story.append(_approval_block(header, st))
+    elif dtype_upper == "DO":
+        story.append(Spacer(1, 14))
+        story.append(_do_receiver_block(header, st))
+    elif dtype_upper == "INVOICE":
+        bank = _invoice_bank_block(header, st)
+        if bank is not None:
+            story.append(Spacer(1, 12))
+            story.append(bank)
 
     story.append(Spacer(1, 18))
     story.append(_signature_footer(header, st))

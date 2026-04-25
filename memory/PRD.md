@@ -59,7 +59,18 @@ PO, PR, DO, QUOTATION, INVOICE — plus any admin-defined custom types (e.g. PAC
 - **P3** Outbound webhooks (on_document_final → Slack/Teams)
 
 ## Changelog
-- **2026-04-25** **Reports status alignment** — fixed bug where filtering Reports by "Approved" returned 0 docs. Frontend dropdown (`Reports.jsx`) now shows friendly labels ("Final / Approved", "Manual Draft", …) but sends canonical codes from `DOC_STATUSES`. Backend `reports_service.py` updated: `COMPLETED_STATUSES = ["FINAL"]`, `PIPELINE_STATUSES` includes `UPLOADED`. PDF report (`report_pdf_service.py`) maps codes → friendly labels too. Verified via curl: `?status=FINAL` returns matching docs; KPI `by_status_count` reflects real DB statuses.
+- **2026-04-25** **Corporate document layout overhaul** for all 5 manual doc types (QUOTATION, PO, PR, DO, INVOICE):
+    - Doc-type-aware "To" block: Quotation→client, Invoice→Bill To, PO→Supplier, PR→Requested By, DO→Deliver To. Falls back across `client_name`/`vendor_name`/`requester_name` so older docs still render.
+    - Per-type ref/date rows on right column (PO No+Delivery Date, Request No+Department, DO No+Ref PO, Invoice No+Due Date, etc.).
+    - **PR**: 3-cell approval workflow grid (Requested / Reviewed / Approved By) at the bottom.
+    - **DO**: Vehicle/Driver/Received-By signature box.
+    - **INVOICE**: Payment Details box (Bank, Account, SWIFT) — pulled from header fields or env vars (`BANK_NAME`, `BANK_ACCOUNT`, `BANK_SWIFT`).
+    - Authorised signatory now shows **designation** under the name (`issued_by_designation`, fallback `COMPANY_SIGNATORY_TITLE` env).
+    - Footer: defensive `_sanitize_env()` strips accidentally-concatenated env vars (e.g. when `COMPANY_REG="988952-X, COMPANY_ADDRESS=Lot G3..."` was pasted on Render). Footer now reads cleanly "Quatriz System Sdn Bhd (988952-X)".
+    - Compact title box (40mm × 7mm, 10pt bold, white bg, thin border) — replaces the old chunky 60mm × 18mm gray box.
+    - Templates updated with the new fields so the manual create form exposes them: `delivery_address`, `vehicle_no`, `driver_name`, `requester_position`, `reviewer_name/position`, `approver_name/position`, `bank_name/account/swift`, `payment_method`, `issued_by_designation`, etc.
+    - Verified by generating PDFs for all 5 types and AI-analyzing each — every check (title placement, addressee block, ref grid, items, totals, type-specific section, signatory, clean footer) ✓ passed.
+- **2026-04-25** **Reports status alignment** — fixed bug where filtering Reports by "Approved" returned 0 docs. Frontend dropdown (`Reports.jsx`) now shows friendly labels ("Final / Approved", "Manual Draft", …) but sends canonical codes from `DOC_STATUSES`. Backend `reports_service.py` updated: `COMPLETED_STATUSES = ["FINAL"]`, `PIPELINE_STATUSES` includes `UPLOADED`. PDF report (`report_pdf_service.py`) maps codes → friendly labels too. Verified via curl.
 - **2026-04-25** Tightened tesseract memory caps for Render free tier: DPI 120→100 (`ocr_service.py`), `MALLOC_ARENA_MAX=2` (Dockerfile + start.sh), Celery `--max-memory-per-child=250000` (start.sh). Reduces peak worker RSS to keep uvicorn responsive and prevent the "connection refused" OOM kill on bulk uploads.
 - **2026-04-25** Tightened mobile/tablet "Original PDF" card on Review.jsx (smaller padding + icon + button + truncation) — removes wasted vertical/horizontal whitespace below the `lg` breakpoint.
 - **2026-04-25** *Reverted* Gemini PDF OCR experiment — pypdf+tesseract path retained (user prefers tesseract accuracy on real quotation PDFs).
