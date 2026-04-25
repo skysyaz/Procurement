@@ -35,7 +35,7 @@ services:
       - key: JWT_SECRET
         generateValue: true     # Render auto-generates a strong random secret
       - key: DB_NAME
-        value: procureflow
+        value: procu
       - key: ADMIN_NAME
         value: Administrator
       # ── Fill these 4 in the Render dashboard once after first deploy ──
