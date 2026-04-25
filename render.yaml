@@ -1,0 +1,92 @@
+# ProcureFlow — Render Blueprint
+# One-shot deploy: New + → Blueprint → connect this repo → set 4 secrets → Apply.
+# https://render.com/docs/blueprint-spec
+
+services:
+  # ────────────────────────────────────────────────────────────────────
+  # Backend API + Celery worker (single container, two processes)
+  # ────────────────────────────────────────────────────────────────────
+  - type: web
+    name: procureflow-api
+    runtime: docker
+    region: singapore           # change to oregon / frankfurt / etc. if you prefer
+    plan: starter               # free spins down after 15 min; starter is always-on
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/
+    autoDeploy: true
+    disk:
+      name: uploads             # persistent storage for uploaded PDFs
+      mountPath: /app/uploads
+      sizeGB: 1                 # bump later from the dashboard
+    envVars:
+      - key: USE_CELERY
+        value: "true"
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: procureflow-redis
+          property: connectionString
+      - key: CELERY_BACKEND_URL
+        fromService:
+          type: keyvalue
+          name: procureflow-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true     # Render auto-generates a strong random secret
+      - key: DB_NAME
+        value: procureflow
+      - key: ADMIN_NAME
+        value: Administrator
+      # ── Fill these 4 in the Render dashboard once after first deploy ──
+      - key: MONGO_URL
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: EMERGENT_LLM_KEY
+        sync: false
+      # ── Fill after you know the frontend URL (step 2 in deploy guide) ──
+      - key: FRONTEND_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      # ── Optional: leave blank to disable email sending (UI shows 503) ──
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+
+  # ────────────────────────────────────────────────────────────────────
+  # React static frontend
+  # ────────────────────────────────────────────────────────────────────
+  - type: web
+    name: procureflow-web
+    runtime: static
+    region: singapore
+    buildCommand: cd frontend && yarn install --frozen-lockfile && yarn build
+    staticPublishPath: ./frontend/build
+    pullRequestPreviewsEnabled: false
+    envVars:
+      # Set this in the dashboard to the URL of procureflow-api after step 1.
+      - key: REACT_APP_BACKEND_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /static/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+
+  # ────────────────────────────────────────────────────────────────────
+  # Redis (Celery broker)
+  # ────────────────────────────────────────────────────────────────────
+  - type: keyvalue
+    name: procureflow-redis
+    region: singapore
+    plan: free                  # 250 MB — plenty for the queue
+    ipAllowList: []             # only services in this Render workspace
+    maxmemoryPolicy: allkeys-lru
