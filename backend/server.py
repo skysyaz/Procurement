@@ -606,6 +606,19 @@ async def _run_pipeline(doc_id: str) -> None:
                 file_path.unlink()
             except OSError:
                 pass
+        # Drop large strings + force GC so the next batched PDF starts with
+        # a clean slate.  On 512 MB Render free-tier this is the difference
+        # between "next PDF processes" and "container OOM-killed".
+        try:
+            del raw_text  # noqa: F821
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            del extracted  # noqa: F821
+        except Exception:  # noqa: BLE001
+            pass
+        import gc as _gc
+        _gc.collect()
 
 
 @api_router.post("/documents/upload")
@@ -632,19 +645,25 @@ async def process_document(doc_id: str, user: dict = Depends(require_min_role("u
     return _serialize(updated)
 
 
-# Cached result of the last Celery worker health check.
-# Keys: ts (epoch seconds of last probe), healthy (bool).
+# Cached result of the last Redis health check.
 _celery_probe_cache: Dict[str, Any] = {"ts": 0.0, "healthy": False}
 _CELERY_PROBE_TTL = 30.0  # seconds
 
 
 def _use_celery() -> bool:
-    """Return True only if (a) Celery is enabled, (b) Redis is reachable, AND
-    (c) at least one Celery worker is actually answering ping.  We previously
-    only checked Redis, so on Render — where the worker process can crash
-    silently (OOM) — tasks were queued forever and the docs got stuck at
-    'UPLOADED'.  Result is cached for ``_CELERY_PROBE_TTL`` seconds to keep
-    upload latency low."""
+    """Return True when Celery routing is enabled and Redis is reachable.
+
+    NOTE: We deliberately do *not* call ``celery.control.inspect().ping()`` —
+    on a free-tier single-worker setup with ``--concurrency=1`` the worker is
+    busy executing tasks and can't respond to ping in time, so the probe
+    spuriously fails and the API falls back to FastAPI BackgroundTasks
+    (in-process), running OCR and LLM calls inside uvicorn.  That stacks
+    memory on top of the worker, drives RSS past the free-tier limit, and
+    pushes Render to SIGTERM the web service mid-batch.
+
+    If Redis is up, we trust Celery to drain the queue.  When the worker
+    genuinely dies, users can recover individual stuck docs via the new
+    "Retry" button (POST /documents/{id}/process)."""
     if os.environ.get("USE_CELERY", "true").lower() not in {"1", "true", "yes"}:
         return False
     import time as _t
@@ -654,12 +673,12 @@ def _use_celery() -> bool:
     healthy = False
     try:
         import redis as _redis
-        r = _redis.Redis.from_url(os.environ.get("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0"))
+        r = _redis.Redis.from_url(
+            os.environ.get("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0"),
+            socket_connect_timeout=1.0, socket_timeout=1.0,
+        )
         r.ping()
-        # Redis is up — now confirm a worker is actually listening.
-        from celery_app import celery as _celery_app
-        pong = _celery_app.control.inspect(timeout=1.0).ping()
-        healthy = bool(pong)
+        healthy = True
     except Exception:  # noqa: BLE001
         healthy = False
     _celery_probe_cache["ts"] = now
