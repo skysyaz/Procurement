@@ -58,7 +58,7 @@ export default function App() {
             <Route path="/upload" element={<Protected minRole="user"><UploadPage /></Protected>} />
             <Route path="/documents" element={<Protected><DocumentList /></Protected>} />
             <Route path="/create" element={<Protected minRole="user"><CreateDocument /></Protected>} />
-            <Route path="/templates" element={<Protected><Templates /></Protected>} />
+            <Route path="/templates" element={<Protected minRole="admin"><Templates /></Protected>} />
             <Route path="/reports" element={<Protected><Reports /></Protected>} />
             <Route path="/review/:id" element={<Protected><Review /></Protected>} />
 

@@ -11,7 +11,7 @@ const LINKS = [
   { to: "/upload", label: "Upload & Extract", icon: UploadSimple, minRole: "user" },
   { to: "/documents", label: "Documents", icon: FileText, minRole: "viewer" },
   { to: "/create", label: "Create Document", icon: PlusCircle, minRole: "user" },
-  { to: "/templates", label: "Templates", icon: Cube, minRole: "viewer" },
+  { to: "/templates", label: "Templates", icon: Cube, minRole: "admin" },
   { to: "/reports", label: "Reports", icon: ChartBar, minRole: "viewer" },
 ];
 
