@@ -21,7 +21,8 @@ from fastapi import (
 from fastapi.responses import FileResponse, JSONResponse, Response as FastResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from starlette.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from services.audit_service import AuditEvent, log_from_user, write_log
 from services.auth_service import (
@@ -500,6 +501,23 @@ async def delete_template(doc_type: str, actor: dict = Depends(require_roles("ad
 @api_router.get("/")
 async def root():
     return {"message": "ProcureFlow API", "version": "1.1", "email_configured": email_configured()}
+
+
+@api_router.get("/health")
+async def health_check():
+    """Health check endpoint for container orchestration."""
+    try:
+        # Quick check: can we reach MongoDB?
+        await db.command("ping")
+        mongo_healthy = True
+    except Exception:
+        mongo_healthy = False
+
+    return {
+        "status": "healthy" if mongo_healthy else "degraded",
+        "mongodb": "connected" if mongo_healthy else "disconnected",
+        "version": "1.1",
+    }
 
 
 @api_router.get("/templates")
@@ -1067,8 +1085,15 @@ async def on_startup():
     await db.documents.create_index("id", unique=True)
     await db.documents.create_index("created_at")
     await db.documents.create_index("owner_id")
+    # Composite indexes for common query patterns
+    await db.documents.create_index([("owner_id", 1), ("status", 1)])
+    await db.documents.create_index([("type", 1), ("created_at", -1)])
+    await db.documents.create_index([("status", 1), ("created_at", -1)])
+    await db.documents.create_index([("owner_id", 1), ("type", 1), ("status", 1)])
     await db.login_attempts.create_index("identifier", unique=True)
     await db.audit_logs.create_index("created_at")
+    await db.audit_logs.create_index([("actor_email", 1), ("created_at", -1)])
+    await db.audit_logs.create_index([("action", 1), ("created_at", -1)])
     await db.password_reset_tokens.create_index("token", unique=True)
     await db.document_templates.create_index("document_type", unique=True)
 
@@ -1125,6 +1150,7 @@ if not cors_origins:
         "Set FRONTEND_URL on the backend service to your frontend URL."
     )
 
+app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

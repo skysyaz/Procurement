@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState, lazy, Suspense } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { api, fileUrl } from "../lib/api";
 import DocumentForm from "../components/DocumentForm";
@@ -8,6 +8,52 @@ import { useAuth, can } from "../lib/auth";
 import { FloppyDisk, FileArrowDown, ArrowLeft, CheckCircle, PaperPlaneTilt, ArrowClockwise, Warning, CircleNotch } from "@phosphor-icons/react";
 
 const TYPES = ["PO", "PR", "DO", "QUOTATION", "INVOICE", "OTHER"];
+
+// Lazy loaded PDF iframe component with Intersection Observer
+function LazyPDFViewer({ src, title }) {
+  const [isVisible, setIsVisible] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const containerRef = React.useRef(null);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && !hasLoaded) {
+          setIsVisible(true);
+          setHasLoaded(true);
+        }
+      },
+      { rootMargin: "200px" } // Start loading 200px before visible
+    );
+
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
+
+    return () => observer.disconnect();
+  }, [hasLoaded]);
+
+  if (!isVisible) {
+    return (
+      <div ref={containerRef} className="w-full h-full flex items-center justify-center bg-[#1a1a1a]">
+        <div className="text-[#71717A] text-sm flex items-center gap-2">
+          <CircleNotch size={16} className="animate-spin" />
+          Loading preview...
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <iframe
+      src={src}
+      title={title}
+      className="w-full h-full"
+      loading="lazy"
+      referrerPolicy="no-referrer"
+    />
+  );
+}
 
 export default function Review() {
   const { id } = useParams();
@@ -193,7 +239,16 @@ export default function Review() {
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] flex-1 overflow-hidden">
         <div className="hidden xl:block bg-[#27272A] border-r border-[#E5E7EB] overflow-hidden" data-testid="pdf-viewer-panel">
           {pdfSrc ? (
-            <iframe src={pdfSrc} title="PDF" className="w-full h-full" />
+            <Suspense fallback={
+              <div className="w-full h-full flex items-center justify-center bg-[#27272A]">
+                <div className="text-[#71717A] text-sm flex items-center gap-2">
+                  <CircleNotch size={16} className="animate-spin" />
+                  Loading PDF...
+                </div>
+              </div>
+            }>
+              <LazyPDFViewer src={pdfSrc} title="PDF" />
+            </Suspense>
           ) : (
             <div className="h-full flex items-center justify-center text-[#A1A1AA] text-sm p-8 text-center">
               This is a manually-created document. <br /> Use "Generated PDF" to preview the rendered output.

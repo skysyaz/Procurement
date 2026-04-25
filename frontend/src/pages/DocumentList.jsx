@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { api, apiErrorText } from "../lib/api";
 import StatusBadge, { TypeBadge } from "../components/Badges";
@@ -11,6 +11,62 @@ import {
 
 const TYPES = ["ALL", "PO", "PR", "DO", "QUOTATION", "INVOICE", "OTHER"];
 const STATUSES = ["ALL", "UPLOADED", "PROCESSING", "EXTRACTED", "REVIEWED", "FINAL", "MANUAL_DRAFT", "FAILED"];
+
+// Memoized document row to prevent unnecessary re-renders
+const DocumentRow = React.memo(function DocumentRow({ doc, user, onRetry, onDelete, retryingId }) {
+  const h = doc.extracted_data?.header || {};
+  const ref = h.quotation_number || h.po_number || h.invoice_number || h.request_number || h.delivery_number || doc.filename || doc.id.slice(0, 8);
+  const party = h.vendor_name || h.client_name || "—";
+  const total = doc.extracted_data?.totals?.grand_total;
+
+  const remove = async () => {
+    if (!window.confirm("Delete this document?")) return;
+    await api.delete(`/documents/${doc.id}`);
+    window.location.reload();
+  };
+
+  return (
+    <tr key={doc.id} data-testid={`doc-row-${doc.id}`}>
+      <td><TypeBadge type={doc.type} /></td>
+      <td><Link to={`/review/${doc.id}`} className="font-medium hover:underline">{ref}</Link></td>
+      <td className="text-[#52525B]">{party}</td>
+      <td><StatusBadge status={doc.status} /></td>
+      <td className="text-[#52525B] text-[12px]">{doc.owner_email || "—"}</td>
+      <td className="text-right tabular-nums">{total ? Number(total).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</td>
+      <td className="text-[#52525B] tabular-nums text-[12px]">{new Date(doc.created_at).toLocaleDateString()}</td>
+      <td className="text-right">
+        <div className="flex gap-1 justify-end">
+          {can(user, "user") && (doc.status === "UPLOADED" || doc.status === "FAILED") && (
+            <button
+              className="pf-btn pf-btn-ghost"
+              onClick={() => onRetry(doc.id)}
+              disabled={retryingId === doc.id}
+              title="Re-run OCR & extraction"
+              data-testid={`retry-${doc.id}`}
+            >
+              {retryingId === doc.id
+                ? <CircleNotch size={14} className="animate-spin" />
+                : <ArrowClockwise size={14} />}
+            </button>
+          )}
+          <a href={`${process.env.REACT_APP_BACKEND_URL}/api/documents/${doc.id}/pdf`} target="_blank" rel="noreferrer" className="pf-btn pf-btn-ghost" title="Generated PDF" data-testid={`pdf-${doc.id}`}>
+            <FileArrowDown size={14} />
+          </a>
+          {can(user, "manager") && (
+            <button className="pf-btn pf-btn-ghost" onClick={() => window.dispatchEvent(new CustomEvent('email-doc', { detail: doc.id }))} title="Email PDF" data-testid={`email-${doc.id}`}>
+              <PaperPlaneTilt size={14} />
+            </button>
+          )}
+          {can(user, "user") && (
+            <button className="pf-btn pf-btn-ghost" onClick={remove} title="Delete" data-testid={`del-${doc.id}`}>
+              <Trash size={14} />
+            </button>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+});
 
 export default function DocumentList() {
   const { user } = useAuth();
@@ -117,53 +173,16 @@ export default function DocumentList() {
           <tbody>
             {loading && <tr><td colSpan={8} className="text-center text-[#71717A] py-10 pf-pulse">Loading…</td></tr>}
             {!loading && docs.length === 0 && <tr><td colSpan={8} className="text-center text-[#71717A] py-10">No documents match the filters.</td></tr>}
-            {docs.map((d) => {
-              const h = d.extracted_data?.header || {};
-              const ref = h.quotation_number || h.po_number || h.invoice_number || h.request_number || h.delivery_number || d.filename || d.id.slice(0, 8);
-              const party = h.vendor_name || h.client_name || "—";
-              const total = d.extracted_data?.totals?.grand_total;
-              return (
-                <tr key={d.id} data-testid={`doc-row-${d.id}`}>
-                  <td><TypeBadge type={d.type} /></td>
-                  <td><Link to={`/review/${d.id}`} className="font-medium hover:underline">{ref}</Link></td>
-                  <td className="text-[#52525B]">{party}</td>
-                  <td><StatusBadge status={d.status} /></td>
-                  <td className="text-[#52525B] text-[12px]">{d.owner_email || "—"}</td>
-                  <td className="text-right tabular-nums">{total ? Number(total).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</td>
-                  <td className="text-[#52525B] tabular-nums text-[12px]">{new Date(d.created_at).toLocaleDateString()}</td>
-                  <td className="text-right">
-                    <div className="flex gap-1 justify-end">
-                      {can(user, "user") && (d.status === "UPLOADED" || d.status === "FAILED") && (
-                        <button
-                          className="pf-btn pf-btn-ghost"
-                          onClick={() => retryProcess(d.id)}
-                          disabled={retryingId === d.id}
-                          title="Re-run OCR & extraction"
-                          data-testid={`retry-${d.id}`}
-                        >
-                          {retryingId === d.id
-                            ? <CircleNotch size={14} className="animate-spin" />
-                            : <ArrowClockwise size={14} />}
-                        </button>
-                      )}
-                      <a href={`${process.env.REACT_APP_BACKEND_URL}/api/documents/${d.id}/pdf`} target="_blank" rel="noreferrer" className="pf-btn pf-btn-ghost" title="Generated PDF" data-testid={`pdf-${d.id}`}>
-                        <FileArrowDown size={14} />
-                      </a>
-                      {can(user, "manager") && (
-                        <button className="pf-btn pf-btn-ghost" onClick={() => setEmailingId(d.id)} title="Email PDF" data-testid={`email-${d.id}`}>
-                          <PaperPlaneTilt size={14} />
-                        </button>
-                      )}
-                      {can(user, "user") && (
-                        <button className="pf-btn pf-btn-ghost" onClick={() => remove(d.id)} title="Delete" data-testid={`del-${d.id}`}>
-                          <Trash size={14} />
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+            {docs.map((d) => (
+              <DocumentRow
+                key={d.id}
+                doc={d}
+                user={user}
+                onRetry={retryProcess}
+                onDelete={remove}
+                retryingId={retryingId}
+              />
+            ))}
           </tbody>
         </table>
 
