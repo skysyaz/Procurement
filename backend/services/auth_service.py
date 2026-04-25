@@ -124,8 +124,8 @@ def set_auth_cookies(response, access: str, refresh: str) -> None:
 
 
 def clear_auth_cookies(response) -> None:
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/")
+    response.delete_cookie("access_token", path="/", httponly=True, secure=True, samesite="none")
+    response.delete_cookie("refresh_token", path="/", httponly=True, secure=True, samesite="none")
 
 
 def new_user_doc(email: str, password: str, name: str, role: str) -> dict:
