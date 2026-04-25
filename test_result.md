@@ -101,3 +101,89 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "Test the bulk-upload duplicate prevention and stuck-doc retry features on the preview environment"
+
+frontend:
+  - task: "Bulk upload duplicate prevention"
+    implemented: true
+    working: true
+    file: "frontend/src/pages/Upload.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: "Tested on mobile viewport (412×915). Rapid clicked submit button 5 times within 100ms. Network monitoring confirmed only 1 POST request to /api/documents/bulk-upload was sent. Queued table correctly showed exactly 2 items (not duplicates). Button and file input were properly disabled during upload. The submitting state guard (if (!files.length || submitting) return;) is working correctly."
+  
+  - task: "Retry button visibility for UPLOADED/FAILED status"
+    implemented: true
+    working: true
+    file: "frontend/src/pages/DocumentList.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: "Verified retry button (data-testid='retry-{id}') correctly does NOT appear for documents with EXTRACTED, REVIEWED, or FINAL status. Checked 4 documents with EXTRACTED status - none had retry buttons visible. Implementation at lines 136-148 correctly conditionally renders retry button only for UPLOADED or FAILED status."
+  
+  - task: "Retry button functionality"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/DocumentList.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "testing"
+          comment: "Could not test retry button click functionality because all test documents processed successfully to EXTRACTED status. No documents with UPLOADED or FAILED status were available during testing. The retry button implementation appears correct (shows spinner during retry, calls /api/documents/{id}/process endpoint, reloads data after completion), but actual functionality could not be verified in this test run."
+
+backend:
+  - task: "Bulk upload endpoint duplicate prevention"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: "Backend correctly handled only 1 bulk-upload request despite 5 rapid frontend clicks. Backend logs show: 'POST /api/documents/bulk-upload HTTP/1.1 200 OK' appeared only once. Both documents were successfully uploaded and processed to EXTRACTED status."
+  
+  - task: "Document processing endpoint for retry"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "testing"
+          comment: "Could not test the /api/documents/{id}/process endpoint for retry functionality as no documents remained in UPLOADED or FAILED status during testing."
+
+metadata:
+  created_by: "testing_agent"
+  version: "1.0"
+  test_sequence: 1
+  run_ui: true
+  test_date: "2026-04-25"
+  viewport: "mobile (412×915 - Pixel 7)"
+
+test_plan:
+  current_focus:
+    - "All tests completed"
+  stuck_tasks: []
+  test_all: true
+  test_priority: "high_first"
+
+agent_communication:
+    - agent: "testing"
+      message: "Completed testing of bulk upload duplicate prevention and retry button features. Test 1 (duplicate prevention) PASSED completely. Test 2 (retry button) PARTIALLY tested - visibility logic verified but actual retry functionality could not be tested due to all documents processing successfully. Test 3 (cleanup) completed successfully. No console errors detected. Screenshots saved in .screenshots/ directory."
+    
+    - agent: "testing"
+      message: "IMPORTANT NOTE: The retry button functionality (clicking retry and re-processing) could not be fully tested because all uploaded documents immediately processed to EXTRACTED status. To fully test this feature, would need either: (1) a way to upload documents without auto-processing, or (2) artificially create a FAILED document. The implementation code looks correct based on code review."

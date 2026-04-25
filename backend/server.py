@@ -632,16 +632,39 @@ async def process_document(doc_id: str, user: dict = Depends(require_min_role("u
     return _serialize(updated)
 
 
+# Cached result of the last Celery worker health check.
+# Keys: ts (epoch seconds of last probe), healthy (bool).
+_celery_probe_cache: Dict[str, Any] = {"ts": 0.0, "healthy": False}
+_CELERY_PROBE_TTL = 30.0  # seconds
+
+
 def _use_celery() -> bool:
+    """Return True only if (a) Celery is enabled, (b) Redis is reachable, AND
+    (c) at least one Celery worker is actually answering ping.  We previously
+    only checked Redis, so on Render — where the worker process can crash
+    silently (OOM) — tasks were queued forever and the docs got stuck at
+    'UPLOADED'.  Result is cached for ``_CELERY_PROBE_TTL`` seconds to keep
+    upload latency low."""
     if os.environ.get("USE_CELERY", "true").lower() not in {"1", "true", "yes"}:
         return False
+    import time as _t
+    now = _t.time()
+    if now - _celery_probe_cache["ts"] < _CELERY_PROBE_TTL:
+        return _celery_probe_cache["healthy"]
+    healthy = False
     try:
         import redis as _redis
         r = _redis.Redis.from_url(os.environ.get("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0"))
         r.ping()
-        return True
+        # Redis is up — now confirm a worker is actually listening.
+        from celery_app import celery as _celery_app
+        pong = _celery_app.control.inspect(timeout=1.0).ping()
+        healthy = bool(pong)
     except Exception:  # noqa: BLE001
-        return False
+        healthy = False
+    _celery_probe_cache["ts"] = now
+    _celery_probe_cache["healthy"] = healthy
+    return healthy
 
 
 def _enqueue_pipeline(bg: BackgroundTasks, doc_id: str) -> str:

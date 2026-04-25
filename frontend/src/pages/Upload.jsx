@@ -98,18 +98,24 @@ function BulkUpload() {
   const [files, setFiles] = useState([]);
   const [queued, setQueued] = useState([]);
   const [polling, setPolling] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
   const start = async () => {
-    if (!files.length) return;
+    if (!files.length || submitting) return;
     setError("");
+    setSubmitting(true);
     const fd = new FormData();
     Array.from(files).forEach((f) => fd.append("files", f));
     try {
       const r = await api.post("/documents/bulk-upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
       setQueued(r.data.items);
       setPolling(true);
+      // Clear the picker so an accidental second tap doesn't resubmit the
+      // same files (the request itself is also locked by `submitting`).
+      setFiles([]);
     } catch (e) { setError(apiErrorText(e)); }
+    finally { setSubmitting(false); }
   };
 
   useEffect(() => {
@@ -137,15 +143,25 @@ function BulkUpload() {
       <input
         type="file" multiple accept="application/pdf"
         onChange={(e) => setFiles(e.target.files)}
-        className="block w-full border border-dashed border-[#D4D4D8] p-6 text-[13px]"
+        disabled={submitting}
+        className="block w-full border border-dashed border-[#D4D4D8] p-6 text-[13px] disabled:opacity-50"
         data-testid="bulk-files"
       />
       <div className="mt-4 flex items-center justify-between">
         <div className="text-[12px] text-[#52525B]">
           {files.length ? `${files.length} file(s) selected` : "Select up to 20 PDFs"}
         </div>
-        <button className="pf-btn pf-btn-primary" disabled={!files.length} onClick={start} data-testid="bulk-submit">
-          <UploadSimple size={14} /> Queue for processing
+        <button
+          className="pf-btn pf-btn-primary"
+          disabled={!files.length || submitting}
+          onClick={start}
+          data-testid="bulk-submit"
+        >
+          {submitting ? (
+            <><CircleNotch size={14} className="animate-spin" /> Uploading…</>
+          ) : (
+            <><UploadSimple size={14} /> Queue for processing</>
+          )}
         </button>
       </div>
       {error && <div className="mt-3 text-[12px] text-[#B91C1C]">{error}</div>}

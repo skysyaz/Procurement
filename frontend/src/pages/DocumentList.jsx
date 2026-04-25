@@ -6,7 +6,7 @@ import EmailDialog from "../components/EmailDialog";
 import { useAuth, can } from "../lib/auth";
 import {
   MagnifyingGlass, Trash, FileArrowDown, PaperPlaneTilt,
-  CaretLeft, CaretRight,
+  CaretLeft, CaretRight, ArrowClockwise, CircleNotch,
 } from "@phosphor-icons/react";
 
 const TYPES = ["ALL", "PO", "PR", "DO", "QUOTATION", "INVOICE", "OTHER"];
@@ -24,6 +24,7 @@ export default function DocumentList() {
   const [pageSize, setPageSize] = useState(25);
   const [loading, setLoading] = useState(true);
   const [emailingId, setEmailingId] = useState(null);
+  const [retryingId, setRetryingId] = useState(null);
   const [err, setErr] = useState("");
 
   useEffect(() => {
@@ -54,6 +55,20 @@ export default function DocumentList() {
     if (!window.confirm("Delete this document?")) return;
     await api.delete(`/documents/${id}`);
     load();
+  };
+
+  const retryProcess = async (id) => {
+    setRetryingId(id); setErr("");
+    try {
+      // Server runs OCR + classification + extraction inline; can take ~30s
+      // for image-based PDFs.
+      await api.post(`/documents/${id}/process`);
+      await load();
+    } catch (e) {
+      setErr(apiErrorText(e));
+    } finally {
+      setRetryingId(null);
+    }
   };
 
   const pages = Math.max(1, Math.ceil(total / pageSize));
@@ -118,6 +133,19 @@ export default function DocumentList() {
                   <td className="text-[#52525B] tabular-nums text-[12px]">{new Date(d.created_at).toLocaleDateString()}</td>
                   <td className="text-right">
                     <div className="flex gap-1 justify-end">
+                      {can(user, "user") && (d.status === "UPLOADED" || d.status === "FAILED") && (
+                        <button
+                          className="pf-btn pf-btn-ghost"
+                          onClick={() => retryProcess(d.id)}
+                          disabled={retryingId === d.id}
+                          title="Re-run OCR & extraction"
+                          data-testid={`retry-${d.id}`}
+                        >
+                          {retryingId === d.id
+                            ? <CircleNotch size={14} className="animate-spin" />
+                            : <ArrowClockwise size={14} />}
+                        </button>
+                      )}
                       <a href={`${process.env.REACT_APP_BACKEND_URL}/api/documents/${d.id}/pdf`} target="_blank" rel="noreferrer" className="pf-btn pf-btn-ghost" title="Generated PDF" data-testid={`pdf-${d.id}`}>
                         <FileArrowDown size={14} />
                       </a>
