@@ -7,7 +7,6 @@ import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/Upload";
 import DocumentList from "./pages/DocumentList";
 import CreateDocument from "./pages/CreateDocument";
-import Templates from "./pages/Templates";
 import Review from "./pages/Review";
 import Reports from "./pages/Reports";
 import Login from "./pages/Login";
@@ -58,7 +57,7 @@ export default function App() {
             <Route path="/upload" element={<Protected minRole="user"><UploadPage /></Protected>} />
             <Route path="/documents" element={<Protected><DocumentList /></Protected>} />
             <Route path="/create" element={<Protected minRole="user"><CreateDocument /></Protected>} />
-            <Route path="/templates" element={<Protected minRole="admin"><Templates /></Protected>} />
+            <Route path="/templates" element={<Navigate to="/admin/templates" replace />} />
             <Route path="/reports" element={<Protected><Reports /></Protected>} />
             <Route path="/review/:id" element={<Protected><Review /></Protected>} />
 
