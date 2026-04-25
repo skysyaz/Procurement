@@ -57,33 +57,110 @@ def _strip_fence(raw: str) -> str:
     return text.strip()
 
 
+def _empty_payload() -> Dict[str, Any]:
+    return {"header": {}, "items": [], "totals": {}}
+
+
+def _safe_json_load(raw: str) -> Dict[str, Any] | None:
+    """Best-effort JSON extraction from a raw LLM response.
+
+    Tries (in order):
+      1. ``json.loads`` on the full cleaned string.
+      2. The widest ``{...}`` slice (greedy, dotall) — handles models that
+         prepend a "Sure, here is the JSON:" prefix.
+      3. A non-greedy first JSON object scan with brace-balance counting,
+         which survives nested objects/arrays.
+      4. A last-ditch pass that strips trailing commas (``,}`` and ``,]``),
+         a very common LLM mistake.
+
+    Returns ``None`` if every attempt fails — the caller falls back to an
+    empty payload so the pipeline never raises.
+    """
+    if not raw:
+        return None
+    text = _strip_fence(raw)
+
+    # Attempt 1: parse the whole thing
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt 2: greedy outermost {...}
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    # Attempt 3: brace-balanced scan from first '{'
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if esc:
+                esc = False
+                continue
+            if ch == "\\":
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        # Attempt 4: strip trailing commas inside that slice
+                        cleaned = re.sub(r",(\s*[\]}])", r"\1", candidate)
+                        try:
+                            return json.loads(cleaned)
+                        except json.JSONDecodeError:
+                            break
+    return None
+
+
 async def extract_structured(document_type: str, raw_text: str) -> Dict[str, Any]:
     if document_type == "OTHER" or not raw_text:
-        return {"header": {}, "items": [], "totals": {}}
+        return _empty_payload()
 
     api_key = os.environ.get("EMERGENT_LLM_KEY")
     if not api_key:
         logger.warning("EMERGENT_LLM_KEY missing; returning empty extraction")
-        return {"header": {}, "items": [], "totals": {}}
+        return _empty_payload()
 
-    chat = LlmChat(
-        api_key=api_key,
-        session_id=f"extract-{uuid.uuid4()}",
-        system_message=_system_prompt(document_type),
-    ).with_model("gemini", "gemini-2.5-flash")
+    # Bound memory: the LLM SDK buffers the full response, so don't feed it
+    # an enormous prompt.  12k chars covers virtually every quote/PO/invoice.
+    snippet = (raw_text or "")[:12000]
 
-    snippet = raw_text[:12000]
-    resp = await chat.send_message(UserMessage(text=f"OCR TEXT:\n{snippet}"))
-    cleaned = _strip_fence(resp or "")
     try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError:
-        # Try to locate the JSON body inside the response
-        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if not match:
-            logger.error("LLM returned non-JSON: %s", cleaned[:200])
-            return {"header": {}, "items": [], "totals": {}}
-        parsed = json.loads(match.group(0))
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"extract-{uuid.uuid4()}",
+            system_message=_system_prompt(document_type),
+        ).with_model("gemini", "gemini-2.5-flash")
+        resp = await chat.send_message(UserMessage(text=f"OCR TEXT:\n{snippet}"))
+    except Exception as exc:  # noqa: BLE001
+        # Network blips, rate limits, model errors, etc. — never propagate.
+        logger.warning("LLM call failed for %s: %s", document_type, exc)
+        return _empty_payload()
+
+    parsed = _safe_json_load(resp or "")
+    if not isinstance(parsed, dict):
+        logger.error("LLM returned non-parseable JSON for %s: %s",
+                     document_type, (resp or "")[:200])
+        return _empty_payload()
 
     parsed.setdefault("header", {})
     parsed.setdefault("items", [])
@@ -93,8 +170,9 @@ async def extract_structured(document_type: str, raw_text: str) -> Dict[str, Any
     # Q-number between quotation_number and reference_number; ensure the
     # primary field is populated so downstream rendering and search work.
     if document_type == "QUOTATION":
-        hdr = parsed["header"]
+        hdr = parsed.get("header") if isinstance(parsed.get("header"), dict) else {}
         if not hdr.get("quotation_number") and hdr.get("reference_number"):
             hdr["quotation_number"] = hdr["reference_number"]
+        parsed["header"] = hdr
 
     return parsed
