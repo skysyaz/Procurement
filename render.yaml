@@ -64,7 +64,6 @@ services:
   - type: web
     name: procureflow-web
     runtime: static
-    region: singapore
     buildCommand: cd frontend && yarn install --frozen-lockfile && yarn build
     staticPublishPath: ./frontend/build
     pullRequestPreviewsEnabled: false
