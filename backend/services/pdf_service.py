@@ -187,8 +187,9 @@ def _branded_top_band(title: str, st) -> Table:
     band.setStyle(
         TableStyle(
             [
-                ("VALIGN", (0, 0), (0, 0), "MIDDLE"),
-                ("VALIGN", (1, 0), (1, 0), "TOP"),
+                # Both cells vertically centered so the title box sits
+                # level with the logo's vertical centre — no zig-zag.
+                ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
                 ("ALIGN", (1, 0), (1, 0), "RIGHT"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
