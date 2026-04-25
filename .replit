@@ -1,0 +1,56 @@
+modules = ["nodejs-20", "python-3.12", "web", "bash"]
+[agent]
+expertMode = true
+stack = "BEST_EFFORT_FALLBACK"
+
+[nix]
+channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+MONGO_URL = "mongodb://localhost:27017/procureflow"
+JWT_SECRET = "procureflow-dev-jwt-secret-key-replit-2024"
+ADMIN_EMAIL = "admin@procureflow.com"
+ADMIN_PASSWORD = "Admin123!"
+FRONTEND_URL = "https://6fa98891-f034-4956-8079-bdf3e9605197-00-2al60m1wgbuoq.sisko.replit.dev"
+REACT_APP_BACKEND_URL = ""
+PORT = "8001"
+DB_NAME = "procureflow"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash start.sh"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 8001
+externalPort = 3000
+exposeLocalhost = true
+
+[deployment]
+deploymentTarget = "vm"
+run = ["bash", "start.sh"]

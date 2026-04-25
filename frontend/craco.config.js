@@ -57,17 +57,25 @@ let webpackConfig = {
 };
 
 webpackConfig.devServer = (devServerConfig) => {
-  // Add health check endpoints if enabled
+  devServerConfig.host = "0.0.0.0";
+  devServerConfig.port = 5000;
+  devServerConfig.allowedHosts = "all";
+  devServerConfig.proxy = [
+    {
+      context: ["/api", "/uploads"],
+      target: "http://127.0.0.1:8001",
+      changeOrigin: true,
+    },
+  ];
+
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
     const originalSetupMiddlewares = devServerConfig.setupMiddlewares;
 
     devServerConfig.setupMiddlewares = (middlewares, devServer) => {
-      // Call original setup if exists
       if (originalSetupMiddlewares) {
         middlewares = originalSetupMiddlewares(middlewares, devServer);
       }
 
-      // Setup health endpoints
       setupHealthEndpoints(devServer, healthPluginInstance);
 
       return middlewares;
