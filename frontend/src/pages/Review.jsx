@@ -89,7 +89,9 @@ export default function Review() {
   };
 
   const pdfSrc = useMemo(() => (doc?.source === "AUTO" ? fileUrl(doc.file_url) : null), [doc]);
-  const genPdf = `${process.env.REACT_APP_BACKEND_URL}/api/documents/${id}/pdf`;
+  // Cache-bust the generated-PDF URL whenever the document is saved so the
+  // browser/PDF viewer can't serve a stale render after a type or data change.
+  const genPdf = `${process.env.REACT_APP_BACKEND_URL}/api/documents/${id}/pdf?v=${encodeURIComponent(doc?.updated_at || doc?.created_at || "")}`;
 
   if (!doc) return <div className="p-10 pf-pulse text-[#71717A]">Loading…</div>;
 

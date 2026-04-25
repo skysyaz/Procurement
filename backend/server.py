@@ -1006,7 +1006,15 @@ async def generate_document_pdf(doc_id: str, user: dict = Depends(get_current_us
     return FastResponse(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{doc.get("type", "document")}-{doc_id}.pdf"'},
+        headers={
+            "Content-Disposition": f'inline; filename="{doc.get("type", "document")}-{doc_id}.pdf"',
+            # Force fresh render every time so a type/data change is never
+            # masked by a stale browser/PDF-viewer cache. The frontend also
+            # cache-busts with a `?v=updated_at` query param.
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
     )
 
 
