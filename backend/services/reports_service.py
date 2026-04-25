@@ -14,9 +14,10 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
-# Statuses we consider "in pipeline" — extraction done but not yet finalized.
-PIPELINE_STATUSES = ["PROCESSING", "EXTRACTED", "REVIEWED", "MANUAL_DRAFT"]
-COMPLETED_STATUSES = ["APPROVED", "SENT"]
+# Statuses we consider "in pipeline" — uploaded/extracted but not yet finalized.
+# Must align with DOC_STATUSES in server.py.
+PIPELINE_STATUSES = ["UPLOADED", "PROCESSING", "EXTRACTED", "REVIEWED", "MANUAL_DRAFT"]
+COMPLETED_STATUSES = ["FINAL"]
 
 
 def _scope_for(user: Dict[str, Any]) -> Dict[str, Any]:

@@ -9,7 +9,19 @@ import {
 } from "@phosphor-icons/react";
 
 const TYPES = ["ALL", "PO", "PR", "DO", "QUOTATION", "INVOICE", "OTHER"];
-const STATUSES = ["ALL", "PROCESSING", "EXTRACTED", "REVIEWED", "MANUAL_DRAFT", "APPROVED", "SENT", "FAILED"];
+// Canonical status codes (sent to API) mapped to friendly UI labels.
+// Codes must stay in sync with backend DOC_STATUSES in server.py.
+const STATUS_OPTIONS = [
+  { code: "ALL", label: "All Statuses" },
+  { code: "UPLOADED", label: "Uploaded" },
+  { code: "PROCESSING", label: "Processing" },
+  { code: "EXTRACTED", label: "Extracted" },
+  { code: "REVIEWED", label: "Reviewed" },
+  { code: "MANUAL_DRAFT", label: "Manual Draft" },
+  { code: "FINAL", label: "Final / Approved" },
+  { code: "FAILED", label: "Failed" },
+];
+const STATUS_LABEL = Object.fromEntries(STATUS_OPTIONS.map((o) => [o.code, o.label]));
 
 const RM = (n) => Number(n || 0).toLocaleString("en-MY", {
   minimumFractionDigits: 2, maximumFractionDigits: 2,
@@ -132,7 +144,7 @@ export default function Reports() {
               className="pf-input"
               data-testid="filter-status"
             >
-              {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+              {STATUS_OPTIONS.map((o) => <option key={o.code} value={o.code}>{o.label}</option>)}
             </select>
           </Field>
           <Field label="From">
@@ -160,7 +172,7 @@ export default function Reports() {
       <div className="hidden print:block mb-6 border-b border-[#0A0A0B] pb-4">
         <div className="font-display text-[22px] font-bold">Procurement Report</div>
         <div className="text-[12px] text-[#52525B]">
-          Type: <b>{filters.type}</b> · Status: <b>{filters.status}</b> · From: <b>{filters.from || "—"}</b> · To: <b>{filters.to || "—"}</b>
+          Type: <b>{filters.type}</b> · Status: <b>{STATUS_LABEL[filters.status] || filters.status}</b> · From: <b>{filters.from || "—"}</b> · To: <b>{filters.to || "—"}</b>
         </div>
       </div>
 
@@ -177,7 +189,7 @@ export default function Reports() {
         <KpiCard
           label="By Status"
           value={k.by_status_count ? Object.keys(k.by_status_count).length : 0}
-          subtitle={k.by_status_count ? Object.entries(k.by_status_count).map(([s, n]) => `${s}: ${n}`).join("  ·  ") : ""}
+          subtitle={k.by_status_count ? Object.entries(k.by_status_count).map(([s, n]) => `${STATUS_LABEL[s] || s}: ${n}`).join("  ·  ") : ""}
           testid="kpi-statuses"
         />
       </div>

@@ -59,6 +59,7 @@ PO, PR, DO, QUOTATION, INVOICE — plus any admin-defined custom types (e.g. PAC
 - **P3** Outbound webhooks (on_document_final → Slack/Teams)
 
 ## Changelog
+- **2026-04-25** **Reports status alignment** — fixed bug where filtering Reports by "Approved" returned 0 docs. Frontend dropdown (`Reports.jsx`) now shows friendly labels ("Final / Approved", "Manual Draft", …) but sends canonical codes from `DOC_STATUSES`. Backend `reports_service.py` updated: `COMPLETED_STATUSES = ["FINAL"]`, `PIPELINE_STATUSES` includes `UPLOADED`. PDF report (`report_pdf_service.py`) maps codes → friendly labels too. Verified via curl: `?status=FINAL` returns matching docs; KPI `by_status_count` reflects real DB statuses.
 - **2026-04-25** Tightened tesseract memory caps for Render free tier: DPI 120→100 (`ocr_service.py`), `MALLOC_ARENA_MAX=2` (Dockerfile + start.sh), Celery `--max-memory-per-child=250000` (start.sh). Reduces peak worker RSS to keep uvicorn responsive and prevent the "connection refused" OOM kill on bulk uploads.
 - **2026-04-25** Tightened mobile/tablet "Original PDF" card on Review.jsx (smaller padding + icon + button + truncation) — removes wasted vertical/horizontal whitespace below the `lg` breakpoint.
 - **2026-04-25** *Reverted* Gemini PDF OCR experiment — pypdf+tesseract path retained (user prefers tesseract accuracy on real quotation PDFs).

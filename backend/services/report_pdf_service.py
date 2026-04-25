@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -29,13 +29,32 @@ from .pdf_service import (
     _branded_top_band, _styles, _fmt_num,
 )
 
+# Friendly labels for canonical status codes (mirrors the UI mapping in
+# /app/frontend/src/pages/Reports.jsx so the PDF reads the same as the page).
+STATUS_LABEL = {
+    "ALL": "All Statuses",
+    "UPLOADED": "Uploaded",
+    "PROCESSING": "Processing",
+    "EXTRACTED": "Extracted",
+    "REVIEWED": "Reviewed",
+    "MANUAL_DRAFT": "Manual Draft",
+    "FINAL": "Final / Approved",
+    "FAILED": "Failed",
+}
+
+
+def _status_label(code: Optional[str]) -> str:
+    if not code:
+        return "—"
+    return STATUS_LABEL.get(code, code)
+
 
 def _kpi_strip(kpis: Dict[str, Any], st) -> Table:
     """Four-cell KPI band: doc count, grand total, types, statuses."""
     by_type = kpis.get("by_type_count") or {}
     by_status = kpis.get("by_status_count") or {}
     type_summary = ", ".join(f"{k}: {v}" for k, v in by_type.items()) or "—"
-    status_summary = ", ".join(f"{k}: {v}" for k, v in by_status.items()) or "—"
+    status_summary = ", ".join(f"{_status_label(k)}: {v}" for k, v in by_status.items()) or "—"
 
     cells = [
         ["DOCUMENTS", str(kpis.get("doc_count", 0))],
@@ -114,7 +133,7 @@ def _docs_table(docs: List[Dict[str, Any]], st) -> Table:
             d.get("type") or "",
             Paragraph(d.get("reference") or "—", st["small"]),
             Paragraph(d.get("vendor") or "—", st["small"]),
-            d.get("status") or "",
+            _status_label(d.get("status")),
             _fmt_num(d.get("amount", 0)),
         ])
     if not body:
@@ -178,7 +197,7 @@ def render_report_pdf(summary: Dict[str, Any]) -> bytes:
     f = summary.get("filters") or {}
     f_line = (
         f"Type: <b>{f.get('type', 'ALL')}</b>  &nbsp;&nbsp;"
-        f"Status: <b>{f.get('status', 'ALL')}</b>  &nbsp;&nbsp;"
+        f"Status: <b>{_status_label(f.get('status', 'ALL'))}</b>  &nbsp;&nbsp;"
         f"From: <b>{f.get('from') or '—'}</b>  &nbsp;&nbsp;"
         f"To: <b>{f.get('to') or '—'}</b>  &nbsp;&nbsp;"
         f"Generated: <b>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</b>"
