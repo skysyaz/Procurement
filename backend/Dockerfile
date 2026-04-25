@@ -11,6 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# Cap glibc malloc arenas — drastically reduces RSS / VSZ growth in
+# multi-threaded Python (uvicorn + tesseract spawn), prevents Render
+# free-tier OOM during bulk OCR.
+ENV MALLOC_ARENA_MAX=2
+
 WORKDIR /app
 
 # Copy requirements first for caching

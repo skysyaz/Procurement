@@ -59,6 +59,7 @@ PO, PR, DO, QUOTATION, INVOICE — plus any admin-defined custom types (e.g. PAC
 - **P3** Outbound webhooks (on_document_final → Slack/Teams)
 
 ## Changelog
+- **2026-04-25** Tightened tesseract memory caps for Render free tier: DPI 120→100 (`ocr_service.py`), `MALLOC_ARENA_MAX=2` (Dockerfile + start.sh), Celery `--max-memory-per-child=250000` (start.sh). Reduces peak worker RSS to keep uvicorn responsive and prevent the "connection refused" OOM kill on bulk uploads.
 - **2026-04-25** Tightened mobile/tablet "Original PDF" card on Review.jsx (smaller padding + icon + button + truncation) — removes wasted vertical/horizontal whitespace below the `lg` breakpoint.
 - **2026-04-25** *Reverted* Gemini PDF OCR experiment — pypdf+tesseract path retained (user prefers tesseract accuracy on real quotation PDFs).
 

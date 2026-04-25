@@ -59,9 +59,9 @@ def _extract_ocr(path: Path) -> str:
         chunks: list[str] = []
         for i in range(1, n_pages + 1):
             try:
-                # 120 DPI keeps peak per-page bitmap memory ~30 MB while still
+                # 100 DPI keeps peak per-page bitmap memory ~20 MB while still
                 # being legible for tesseract on receipt/quote-grade PDFs.
-                imgs = convert_from_path(str(path), dpi=120, first_page=i, last_page=i)
+                imgs = convert_from_path(str(path), dpi=100, first_page=i, last_page=i)
             except PDFPageCountError:
                 break
             if imgs:
