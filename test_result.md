@@ -102,9 +102,21 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Test the bulk-upload duplicate prevention and stuck-doc retry features on the preview environment"
+user_problem_statement: "Add defensive UX when LLM extraction fails (budget exhausted, rate limited, parse error): mark document as FAILED with a human-readable extraction_error, show a banner with Retry button on the Review page."
 
 frontend:
+  - task: "Review page extraction-error banner with Retry"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/Review.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Added a red banner (data-testid='extraction-error-banner') at the top of the Review page that shows when doc.extraction_error is set OR doc.status === 'FAILED'. Banner displays the human-readable message from the backend (e.g. 'LLM service budget exhausted — top up your Emergent Universal Key and click Retry.') and a 'Retry extraction' button (data-testid='extraction-retry-btn') that POSTs to /api/documents/{id}/process, then re-hydrates the local state from the response. Includes a spinner while retrying and surfaces any retry error inline. NOT requesting frontend testing yet — will ask the user first per protocol."
+
   - task: "Bulk upload duplicate prevention"
     implemented: true
     working: true
@@ -215,6 +227,17 @@ frontend:
           comment: "Tested on 2026-04-25. After logout, both access_token and refresh_token cookies are absent. Only Cloudflare cookies (cf_clearance, __cf_bm) remain. Cookie cleanup working correctly."
 
 backend:
+  - task: "ExtractionError surfacing on LLM failure"
+    implemented: true
+    working: "NA"
+    file: "backend/services/extraction_service.py, backend/server.py, backend/celery_app.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Refactored extract_structured to raise ExtractionError (with friendly message - detects budget exhausted / rate-limit / timeout / auth) instead of silently returning empty payload. _run_pipeline (server.py) and Celery task (celery_app.py) now catch ExtractionError, persist raw_text + classification + ocr fields, set status=FAILED and store extraction_error string on the document. Successful runs $unset extraction_error. Added extraction_error: Optional[str] field to DocumentModel. Need backend testing: (1) when LLM call raises an exception, document ends up status=FAILED with extraction_error populated; (2) when EMERGENT_LLM_KEY missing, ExtractionError is raised with 'EMERGENT_LLM_KEY is not configured' message; (3) successful retry via POST /api/documents/{id}/process clears the extraction_error field; (4) classification + raw_text are still persisted even on extraction failure."
   - task: "Bulk upload endpoint duplicate prevention"
     implemented: true
     working: true
@@ -250,11 +273,15 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Auth flow - session persistence on reload (duplicate /api/auth/me requests)"
+    - "ExtractionError surfacing on LLM failure"
   stuck_tasks:
     - "Auth flow - session persistence on reload"
   test_all: false
   test_priority: "high_first"
+
+agent_communication:
+    - agent: "main"
+      message: "Implemented defensive UX for LLM extraction failures. Backend: extraction_service raises ExtractionError (with friendly classified message) on LLM exceptions or unparseable JSON instead of silently returning empty payload; pipeline (server.py + celery_app.py) catches it, marks doc FAILED, stores extraction_error string; success path $unset's extraction_error. Added extraction_error field to DocumentModel. Frontend: Red banner on Review page with Retry button. Please backend-test: simulate LLM failure (e.g. by temporarily unsetting EMERGENT_LLM_KEY or mocking) and verify document ends up status=FAILED + has extraction_error populated; verify successful re-process via /api/documents/{id}/process clears extraction_error and sets status=EXTRACTED; verify raw_text + classification still persist on failure."
 
 agent_communication:
     - agent: "testing"

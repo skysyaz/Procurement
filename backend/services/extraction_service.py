@@ -61,6 +61,41 @@ def _empty_payload() -> Dict[str, Any]:
     return {"header": {}, "items": [], "totals": {}}
 
 
+class ExtractionError(RuntimeError):
+    """Raised when the LLM extraction step fails for a recoverable reason
+    (budget exhausted, rate-limited, network blip, parse failure).
+
+    The pipeline catches this to mark the document as FAILED and surface
+    a human-readable message in the UI so the user can retry.
+    """
+
+    def __init__(self, message: str, *, kind: str = "llm_error") -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def _classify_llm_error(exc: Exception) -> str:
+    """Convert a raw LLM SDK exception into a short, user-facing string.
+
+    Detects the common Emergent Universal Key budget-exhausted case so the
+    Review banner can tell the user exactly what happened (instead of a
+    silent empty form).
+    """
+    msg = str(exc) or exc.__class__.__name__
+    low = msg.lower()
+    if "budget has been exceeded" in low or "max budget" in low:
+        return "LLM service budget exhausted — top up your Emergent Universal Key and click Retry."
+    if "rate limit" in low or "429" in low:
+        return "LLM service rate-limited — wait a moment and click Retry."
+    if "timeout" in low or "timed out" in low:
+        return "LLM service timed out — click Retry to try again."
+    if "unauthorized" in low or "invalid api key" in low or "401" in low:
+        return "LLM service rejected the API key — check your Emergent Universal Key and click Retry."
+    # Generic fallback: keep the first 180 chars so logs stay useful but the
+    # banner isn't a wall of text.
+    return f"Extraction failed: {msg[:180]}"
+
+
 def _safe_json_load(raw: str) -> Dict[str, Any] | None:
     """Best-effort JSON extraction from a raw LLM response.
 
@@ -137,8 +172,11 @@ async def extract_structured(document_type: str, raw_text: str) -> Dict[str, Any
 
     api_key = os.environ.get("EMERGENT_LLM_KEY")
     if not api_key:
-        logger.warning("EMERGENT_LLM_KEY missing; returning empty extraction")
-        return _empty_payload()
+        logger.warning("EMERGENT_LLM_KEY missing; raising ExtractionError")
+        raise ExtractionError(
+            "Extraction failed: EMERGENT_LLM_KEY is not configured on the server.",
+            kind="missing_key",
+        )
 
     # Bound memory: the LLM SDK buffers the full response, so don't feed it
     # an enormous prompt.  12k chars covers virtually every quote/PO/invoice.
@@ -152,15 +190,23 @@ async def extract_structured(document_type: str, raw_text: str) -> Dict[str, Any
         ).with_model("gemini", "gemini-2.5-flash")
         resp = await chat.send_message(UserMessage(text=f"OCR TEXT:\n{snippet}"))
     except Exception as exc:  # noqa: BLE001
-        # Network blips, rate limits, model errors, etc. — never propagate.
+        # Network blips, rate limits, budget exhaustion, model errors, etc.
+        # We surface this to the caller as a typed ExtractionError so the
+        # pipeline can mark the document FAILED and show a banner.  The
+        # previous behaviour (returning an empty payload silently) left users
+        # staring at a blank Review form with no clue why.
+        friendly = _classify_llm_error(exc)
         logger.warning("LLM call failed for %s: %s", document_type, exc)
-        return _empty_payload()
+        raise ExtractionError(friendly) from exc
 
     parsed = _safe_json_load(resp or "")
     if not isinstance(parsed, dict):
         logger.error("LLM returned non-parseable JSON for %s: %s",
                      document_type, (resp or "")[:200])
-        return _empty_payload()
+        raise ExtractionError(
+            "Extraction failed: LLM response could not be parsed as JSON. Click Retry to try again.",
+            kind="parse_error",
+        )
 
     parsed.setdefault("header", {})
     parsed.setdefault("items", [])

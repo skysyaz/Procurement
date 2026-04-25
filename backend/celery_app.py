@@ -46,6 +46,7 @@ def process_document_task(self, doc_id: str) -> str:  # noqa: ARG001
 
     async def _run():
         from datetime import datetime, timezone
+        from services.extraction_service import ExtractionError
 
         # Worker may be a *separate* container from the API — never assume the
         # PDF is on local disk. Pull from R2 (with local-disk fallback for dev).
@@ -58,7 +59,24 @@ def process_document_task(self, doc_id: str) -> str:  # noqa: ARG001
             await db.documents.update_one({"id": doc_id}, {"$set": {"status": "PROCESSING"}})
             raw_text, ocr_method = extract_text_from_pdf(file_path)
             doc_type, confidence, method = await classify(raw_text)
-            extracted = await extract_structured(doc_type, raw_text)
+            try:
+                extracted = await extract_structured(doc_type, raw_text)
+            except ExtractionError as exc:
+                await db.documents.update_one(
+                    {"id": doc_id},
+                    {"$set": {
+                        "raw_text": raw_text,
+                        "type": doc_type,
+                        "confidence_score": confidence,
+                        "classification_method": method,
+                        "ocr_method": ocr_method,
+                        "status": "FAILED",
+                        "extraction_error": str(exc),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }},
+                )
+                logger.warning("Celery extraction failed for %s: %s", doc_id, exc)
+                return "extraction-failed"
             await db.documents.update_one(
                 {"id": doc_id},
                 {"$set": {
@@ -70,7 +88,7 @@ def process_document_task(self, doc_id: str) -> str:  # noqa: ARG001
                     "extracted_data": extracted,
                     "status": "EXTRACTED",
                     "updated_at": datetime.now(timezone.utc).isoformat(),
-                }},
+                }, "$unset": {"extraction_error": ""}},
             )
             return "ok"
         except Exception as exc:  # noqa: BLE001

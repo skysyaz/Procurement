@@ -5,7 +5,7 @@ import DocumentForm from "../components/DocumentForm";
 import EmailDialog from "../components/EmailDialog";
 import StatusBadge, { TypeBadge } from "../components/Badges";
 import { useAuth, can } from "../lib/auth";
-import { FloppyDisk, FileArrowDown, ArrowLeft, CheckCircle, PaperPlaneTilt } from "@phosphor-icons/react";
+import { FloppyDisk, FileArrowDown, ArrowLeft, CheckCircle, PaperPlaneTilt, ArrowClockwise, Warning, CircleNotch } from "@phosphor-icons/react";
 
 const TYPES = ["PO", "PR", "DO", "QUOTATION", "INVOICE", "OTHER"];
 
@@ -18,6 +18,8 @@ export default function Review() {
   const [savedAt, setSavedAt] = useState(null);
   const [typeOverride, setTypeOverride] = useState("");
   const [showEmail, setShowEmail] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState("");
   const { user } = useAuth();
   const nav = useNavigate();
 
@@ -64,6 +66,25 @@ export default function Review() {
       setSavedAt(new Date().toLocaleTimeString());
     } finally {
       setSaving(false);
+    }
+  };
+
+  const retryExtraction = async () => {
+    setRetrying(true);
+    setRetryError("");
+    try {
+      const r = await api.post(`/documents/${id}/process`);
+      setDoc(r.data);
+      setValue({
+        header: r.data.extracted_data?.header || {},
+        items: r.data.extracted_data?.items || [],
+        totals: r.data.extracted_data?.totals || {},
+      });
+      await loadTemplate(r.data.type);
+    } catch (e) {
+      setRetryError(e?.response?.data?.detail || e?.message || "Retry failed");
+    } finally {
+      setRetrying(false);
     }
   };
 
@@ -121,6 +142,42 @@ export default function Review() {
         </div>
       </div>
       {savedAt && <div className="px-8 py-1 text-[11px] text-[#047857] bg-[#ECFDF5] border-b border-[#D1FAE5]">Saved at {savedAt}</div>}
+
+      {(doc.extraction_error || doc.status === "FAILED") && (
+        <div
+          className="px-4 sm:px-8 py-3 bg-[#FEF2F2] border-b border-[#FECACA] flex flex-wrap items-start gap-3"
+          data-testid="extraction-error-banner"
+          role="alert"
+        >
+          <Warning size={18} weight="fill" className="text-[#DC2626] shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0 text-[12px] sm:text-[13px] text-[#991B1B] leading-snug">
+            <div className="font-semibold mb-0.5">Extraction failed</div>
+            <div className="text-[#7F1D1D]">
+              {doc.extraction_error
+                || "The LLM extraction step did not return a usable payload. Click Retry to try again."}
+            </div>
+            {retryError && (
+              <div className="mt-1 text-[11px] text-[#B91C1C]" data-testid="extraction-retry-error">
+                Retry error: {retryError}
+              </div>
+            )}
+          </div>
+          {can(user, "user") && (
+            <button
+              className="pf-btn pf-btn-secondary shrink-0"
+              onClick={retryExtraction}
+              disabled={retrying}
+              data-testid="extraction-retry-btn"
+              title="Re-run OCR & LLM extraction"
+            >
+              {retrying
+                ? <CircleNotch size={14} className="animate-spin" />
+                : <ArrowClockwise size={14} />}
+              {retrying ? "Retrying…" : "Retry extraction"}
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 flex-1 overflow-hidden">
         <div className="hidden lg:block bg-[#27272A] border-r border-[#E5E7EB] overflow-hidden" data-testid="pdf-viewer-panel">

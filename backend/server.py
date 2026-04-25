@@ -35,7 +35,7 @@ from services.email_service import (
     send_password_reset_email,
     send_pdf_email,
 )
-from services.extraction_service import extract_structured
+from services.extraction_service import extract_structured, ExtractionError
 from services.ocr_service import extract_text_from_pdf
 from services.pdf_service import render_document_pdf
 from services import storage_service
@@ -93,6 +93,7 @@ class DocumentModel(BaseModel):
     classification_method: Optional[str] = None
     ocr_method: Optional[str] = None
     extracted_data: Dict[str, Any] = Field(default_factory=dict)
+    extraction_error: Optional[str] = None
     owner_id: Optional[str] = None
     owner_email: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -579,7 +580,29 @@ async def _run_pipeline(doc_id: str) -> None:
         await db.documents.update_one({"id": doc_id}, {"$set": {"status": "PROCESSING"}})
         raw_text, ocr_method = extract_text_from_pdf(file_path)
         doc_type, confidence, method = await classify(raw_text)
-        extracted = await extract_structured(doc_type, raw_text)
+        try:
+            extracted = await extract_structured(doc_type, raw_text)
+        except ExtractionError as exc:
+            # LLM step failed (budget, rate-limit, parse error). Persist what
+            # we already computed (raw_text + classification) so the user can
+            # see context, then mark the document FAILED with a human-readable
+            # message that the Review banner surfaces.
+            now = datetime.now(timezone.utc).isoformat()
+            await db.documents.update_one(
+                {"id": doc_id},
+                {"$set": {
+                    "raw_text": raw_text,
+                    "type": doc_type,
+                    "confidence_score": confidence,
+                    "classification_method": method,
+                    "ocr_method": ocr_method,
+                    "status": "FAILED",
+                    "extraction_error": str(exc),
+                    "updated_at": now,
+                }},
+            )
+            logger.warning("Extraction failed for %s: %s", doc_id, exc)
+            return
         now = datetime.now(timezone.utc).isoformat()
         await db.documents.update_one(
             {"id": doc_id},
@@ -592,7 +615,7 @@ async def _run_pipeline(doc_id: str) -> None:
                 "extracted_data": extracted,
                 "status": "EXTRACTED",
                 "updated_at": now,
-            }},
+            }, "$unset": {"extraction_error": ""}},
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Pipeline failed for %s: %s", doc_id, exc)
