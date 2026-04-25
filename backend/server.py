@@ -237,12 +237,29 @@ async def login(payload: LoginPayload, response: Response, request: Request):
 
 
 @api_router.post("/auth/logout")
-async def logout(response: Response, user: dict = Depends(get_current_user)):
+async def logout(request: Request, response: Response):
+    # Always clear cookies — do NOT gate this on token validity.
+    # If the token is expired, Depends(get_current_user) would return 401,
+    # clear_auth_cookies would never run, and the browser would keep the cookies.
     clear_auth_cookies(response)
-    await log_from_user(
-        db, user,
-        action="USER_LOGOUT", target_type="user", target_id=user["id"],
-    )
+    # Best-effort audit log: only possible when the access token is still valid.
+    try:
+        token = request.cookies.get("access_token")
+        if not token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header[7:]
+        if token:
+            payload = decode(token)
+            if payload.get("type") == "access":
+                user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+                if user:
+                    await log_from_user(
+                        db, user,
+                        action="USER_LOGOUT", target_type="user", target_id=user["id"],
+                    )
+    except Exception:  # noqa: BLE001
+        pass  # expired / invalid token — cookies are still cleared above
     return {"ok": True}
 
 
@@ -915,13 +932,27 @@ async def shutdown_db_client():
 
 app.include_router(api_router)
 
-frontend_url = os.environ.get("FRONTEND_URL", "")
-cors_origins = [frontend_url] if frontend_url else os.environ.get("CORS_ORIGINS", "*").split(",")
+frontend_url = os.environ.get("FRONTEND_URL", "").rstrip("/")
+_raw_cors = os.environ.get("CORS_ORIGINS", "")
+cors_origins = (
+    [frontend_url] if frontend_url
+    else [o.strip() for o in _raw_cors.split(",") if o.strip()]
+)
+# "allow_origins=['*']" is incompatible with allow_credentials=True — browsers will
+# reject the pre-flight and never send/accept cookies.  If neither env var is set we
+# fall back to allow_origins=[] (blocks all cross-origin requests) and log a clear
+# warning so the misconfiguration is visible in Render logs.
+if not cors_origins:
+    logger.warning(
+        "FRONTEND_URL and CORS_ORIGINS are both unset. "
+        "Cross-origin cookie auth will not work. "
+        "Set FRONTEND_URL on the backend service to your frontend URL."
+    )
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=cors_origins,
+    allow_origins=cors_origins,  # explicit list only — never "*" with credentials
     allow_methods=["*"],
     allow_headers=["*"],
 )
