@@ -188,8 +188,8 @@ export default function Review() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 flex-1 overflow-hidden">
-        <div className="hidden lg:block bg-[#27272A] border-r border-[#E5E7EB] overflow-hidden" data-testid="pdf-viewer-panel">
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] flex-1 overflow-hidden">
+        <div className="hidden xl:block bg-[#27272A] border-r border-[#E5E7EB] overflow-hidden" data-testid="pdf-viewer-panel">
           {pdfSrc ? (
             <iframe src={pdfSrc} title="PDF" className="w-full h-full" />
           ) : (
@@ -202,34 +202,37 @@ export default function Review() {
           )}
         </div>
 
-        {/* Mobile / tablet PDF card — iframe PDF preview doesn't work reliably on mobile browsers */}
-        {pdfSrc && (
-          <div className="lg:hidden bg-[#FAFAFA] border-b border-[#E5E7EB] px-4 py-2.5 flex items-center gap-3" data-testid="pdf-mobile-card">
-            <div className="w-8 h-8 bg-[#0A0A0B] flex items-center justify-center shrink-0">
-              <FileArrowDown size={14} color="#fff" weight="bold" />
-            </div>
-            <div className="min-w-0 flex-1 leading-tight">
-              <div className="text-[10px] uppercase tracking-[0.12em] text-[#71717A] font-medium">Original PDF</div>
-              <div className="text-[12px] font-medium truncate">{doc.filename || "document.pdf"}</div>
-            </div>
-            <a href={pdfSrc} target="_blank" rel="noreferrer" className="pf-btn pf-btn-secondary !px-3 !py-1.5 !text-xs shrink-0" data-testid="pdf-mobile-open">
-              Open
-            </a>
-          </div>
-        )}
-
-        <div className="overflow-y-auto bg-white p-4 sm:p-8">
-          {template ? (
-            <DocumentForm template={template} value={value} onChange={setValue} />
-          ) : (
-            <div className="text-[#71717A] text-[13px]">
-              Document classified as <b>{doc.type}</b>. Select a specific type above to map it to a structured template.
-              <div className="mt-6">
-                <div className="pf-overline mb-2">Raw OCR text</div>
-                <pre className="text-[11px] whitespace-pre-wrap bg-[#FAFAFA] p-4 border border-[#E5E7EB] max-h-[400px] overflow-auto">{doc.raw_text || "(no text extracted)"}</pre>
+        <div className="overflow-y-auto bg-white">
+          {/* Compact PDF link bar — shown at every breakpoint < xl, where the
+              inline iframe doesn't fit (or doesn't render on mobile Chrome). */}
+          {pdfSrc && (
+            <div className="xl:hidden bg-[#FAFAFA] border-b border-[#E5E7EB] px-4 sm:px-8 py-2.5 flex items-center gap-3" data-testid="pdf-mobile-card">
+              <div className="w-8 h-8 bg-[#0A0A0B] flex items-center justify-center shrink-0">
+                <FileArrowDown size={14} color="#fff" weight="bold" />
               </div>
+              <div className="min-w-0 flex-1 leading-tight">
+                <div className="text-[10px] uppercase tracking-[0.12em] text-[#71717A] font-medium">Original PDF</div>
+                <div className="text-[12px] font-medium truncate">{doc.filename || "document.pdf"}</div>
+              </div>
+              <a href={pdfSrc} target="_blank" rel="noreferrer" className="pf-btn pf-btn-secondary !px-3 !py-1.5 !text-xs shrink-0" data-testid="pdf-mobile-open">
+                Open
+              </a>
             </div>
           )}
+
+          <div className="p-4 sm:p-6 lg:p-8 max-w-[1100px] mx-auto w-full">
+            {template ? (
+              <DocumentForm template={template} value={value} onChange={setValue} />
+            ) : (
+              <div className="text-[#71717A] text-[13px]">
+                Document classified as <b>{doc.type}</b>. Select a specific type above to map it to a structured template.
+                <div className="mt-6">
+                  <div className="pf-overline mb-2">Raw OCR text</div>
+                  <pre className="text-[11px] whitespace-pre-wrap bg-[#FAFAFA] p-4 border border-[#E5E7EB] max-h-[400px] overflow-auto">{doc.raw_text || "(no text extracted)"}</pre>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
       {showEmail && <EmailDialog docId={id} onClose={() => setShowEmail(false)} />}
