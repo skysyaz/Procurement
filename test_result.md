@@ -141,6 +141,79 @@ frontend:
           agent: "testing"
           comment: "Could not test retry button click functionality because all test documents processed successfully to EXTRACTED status. No documents with UPLOADED or FAILED status were available during testing. The retry button implementation appears correct (shows spinner during retry, calls /api/documents/{id}/process endpoint, reloads data after completion), but actual functionality could not be verified in this test run."
 
+
+  - task: "Auth flow - redirect to login from root"
+    implemented: true
+    working: true
+    file: "frontend/src/App.js, frontend/src/components/Protected.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: "Tested on 2026-04-25. Opening root URL (/) correctly redirects to /login when not authenticated. Protected route wrapper working as expected."
+  
+  - task: "Auth flow - login with credentials"
+    implemented: true
+    working: true
+    file: "frontend/src/pages/Login.jsx, frontend/src/lib/auth.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: "Tested on 2026-04-25. Login with credentials (syazwan.zulkifli@quatriz.com.my / Admin@123) successfully lands on dashboard. User info displayed in sidebar. Login API returns 200 OK."
+  
+  - task: "Auth flow - session persistence on reload"
+    implemented: true
+    working: false
+    file: "frontend/src/lib/auth.jsx, frontend/src/index.js"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: false
+          agent: "testing"
+          comment: "CRITICAL ISSUE: Page reload triggers 2 GET /api/auth/me requests instead of 1. Both requests return 200 OK. Root cause identified: React.StrictMode in index.js (line 8) causes double-mounting of effects in React 18+. The AuthProvider's useEffect runs twice, calling refresh() twice. This is NOT a bug in the retry logic itself (which only retries on network errors/5xx), but a side effect of StrictMode. User stays logged in correctly, but the duplicate request violates the requirement of 'exactly ONE successful GET /api/auth/me on reload'."
+  
+  - task: "Auth flow - logout functionality"
+    implemented: true
+    working: true
+    file: "frontend/src/components/Sidebar.jsx, frontend/src/lib/auth.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: "Tested on 2026-04-25. Clicking logout button successfully redirects to /login. Logout API call returns 200 OK. User state cleared correctly."
+  
+  - task: "Auth flow - no auto-login after logout"
+    implemented: true
+    working: true
+    file: "frontend/src/lib/auth.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: "Tested on 2026-04-25. After logout, reloading the page stays on /login (does not auto-login). Login form is visible and functional."
+  
+  - task: "Auth flow - cookie cleanup after logout"
+    implemented: true
+    working: true
+    file: "backend/server.py (logout endpoint)"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "testing"
+          comment: "Tested on 2026-04-25. After logout, both access_token and refresh_token cookies are absent. Only Cloudflare cookies (cf_clearance, __cf_bm) remain. Cookie cleanup working correctly."
+
 backend:
   - task: "Bulk upload endpoint duplicate prevention"
     implemented: true
@@ -169,16 +242,18 @@ backend:
 metadata:
   created_by: "testing_agent"
   version: "1.0"
-  test_sequence: 1
+  test_sequence: 2
   run_ui: true
   test_date: "2026-04-25"
-  viewport: "mobile (412×915 - Pixel 7)"
+  viewport: "desktop (1920×1080)"
+  last_test: "Auth flow sanity check"
 
 test_plan:
   current_focus:
-    - "All tests completed"
-  stuck_tasks: []
-  test_all: true
+    - "Auth flow - session persistence on reload (duplicate /api/auth/me requests)"
+  stuck_tasks:
+    - "Auth flow - session persistence on reload"
+  test_all: false
   test_priority: "high_first"
 
 agent_communication:
@@ -187,3 +262,6 @@ agent_communication:
     
     - agent: "testing"
       message: "IMPORTANT NOTE: The retry button functionality (clicking retry and re-processing) could not be fully tested because all uploaded documents immediately processed to EXTRACTED status. To fully test this feature, would need either: (1) a way to upload documents without auto-processing, or (2) artificially create a FAILED document. The implementation code looks correct based on code review."
+    
+    - agent: "testing"
+      message: "AUTH FLOW SANITY CHECK COMPLETED (2026-04-25): Tested auth flow after recent auth context retry logic changes. CRITICAL ISSUE FOUND: Page reload triggers 2 GET /api/auth/me requests instead of 1. Root cause: React.StrictMode in index.js causes double-mounting of effects in React 18+. Both requests succeed (200 OK), so this is not a retry logic bug but a StrictMode side effect. All other auth tests passed: redirect to login, login flow, session persistence, logout, cookie cleanup. Recommend removing StrictMode for production/preview builds or adding ref-based guard to prevent double execution."

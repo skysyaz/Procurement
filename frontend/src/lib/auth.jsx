@@ -8,13 +8,35 @@ export function AuthProvider({ children }) {
   const [ready, setReady] = useState(false);
 
   const refresh = useCallback(async () => {
-    try {
-      const r = await api.get("/auth/me");
-      setUser(r.data);
-    } catch {
-      setUser(false);
-    } finally {
-      setReady(true);
+    // Retry transient failures (Render free-tier cold-starts can take 30-60 s,
+    // backend OOM-restarts during heavy OCR also produce a 10-30 s blackout).
+    // Only treat HTTP 401 as "definitely logged out".  Network errors / 5xx
+    // are retried so the user isn't bounced to /login mid-restart.
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const attempts = [0, 1500, 4000, 8000]; // total ~13.5 s before giving up
+    for (let i = 0; i < attempts.length; i++) {
+      if (attempts[i]) await sleep(attempts[i]);
+      try {
+        const r = await api.get("/auth/me", { timeout: 8000 });
+        setUser(r.data);
+        setReady(true);
+        return;
+      } catch (err) {
+        const status = err?.response?.status;
+        if (status === 401 || status === 403) {
+          setUser(false);
+          setReady(true);
+          return;
+        }
+        // network error / 5xx — retry
+        if (i === attempts.length - 1) {
+          // Out of retries: keep current value (null = still loading) so we don't
+          // wrongly redirect to /login.  Mark ready so the UI can render an error.
+          setUser((prev) => (prev === null ? false : prev));
+          setReady(true);
+          return;
+        }
+      }
     }
   }, []);
 
