@@ -10,15 +10,11 @@ services:
     name: procureflow-api
     runtime: docker
     region: singapore           # change to oregon / frankfurt / etc. if you prefer
-    plan: starter               # free spins down after 15 min; starter is always-on
+    plan: free                  # FREE tier — sleeps after 15 min idle, no persistent disk
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
     healthCheckPath: /api/
     autoDeploy: true
-    disk:
-      name: uploads             # persistent storage for uploaded PDFs
-      mountPath: /app/uploads
-      sizeGB: 1                 # bump later from the dashboard
     envVars:
       - key: USE_CELERY
         value: "true"
