@@ -136,17 +136,17 @@ export default function Review() {
           )}
         </div>
 
-        {/* Mobile PDF card — iframe PDF preview doesn't work reliably on mobile browsers */}
+        {/* Mobile / tablet PDF card — iframe PDF preview doesn't work reliably on mobile browsers */}
         {pdfSrc && (
-          <div className="lg:hidden bg-[#FAFAFA] border-b border-[#E5E7EB] p-4 flex items-center gap-3" data-testid="pdf-mobile-card">
-            <div className="w-10 h-10 bg-[#0A0A0B] flex items-center justify-center shrink-0">
-              <FileArrowDown size={18} color="#fff" weight="bold" />
+          <div className="lg:hidden bg-[#FAFAFA] border-b border-[#E5E7EB] px-4 py-2.5 flex items-center gap-3" data-testid="pdf-mobile-card">
+            <div className="w-8 h-8 bg-[#0A0A0B] flex items-center justify-center shrink-0">
+              <FileArrowDown size={14} color="#fff" weight="bold" />
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-[11px] uppercase tracking-[0.12em] text-[#71717A] font-medium">Original PDF</div>
-              <div className="text-[13px] font-medium truncate">{doc.filename || "document.pdf"}</div>
+            <div className="min-w-0 flex-1 leading-tight">
+              <div className="text-[10px] uppercase tracking-[0.12em] text-[#71717A] font-medium">Original PDF</div>
+              <div className="text-[12px] font-medium truncate">{doc.filename || "document.pdf"}</div>
             </div>
-            <a href={pdfSrc} target="_blank" rel="noreferrer" className="pf-btn pf-btn-secondary" data-testid="pdf-mobile-open">
+            <a href={pdfSrc} target="_blank" rel="noreferrer" className="pf-btn pf-btn-secondary !px-3 !py-1.5 !text-xs shrink-0" data-testid="pdf-mobile-open">
               Open
             </a>
           </div>

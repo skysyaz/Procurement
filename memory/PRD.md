@@ -7,7 +7,7 @@ Extend a procurement web app to support: (1) automated document processing (OCR 
 - **Backend**: FastAPI (Python), MongoDB (Motor), local file storage at `/app/backend/uploads`
 - **Queue**: Celery + Redis (supervised); in-process BackgroundTasks fallback when Redis unreachable
 - **Frontend**: React 19 + Tailwind + Phosphor (Cabinet Grotesk / IBM Plex Sans)
-- **OCR**: `pypdf` (digital) → Tesseract + `pdf2image` (scanned fallback)
+- **OCR**: `pypdf` (digital text path) → **Gemini 2.5 Flash PDF** (scanned fallback, replaces tesseract+pdf2image — drops worker peak RAM ~400MB→~50MB on Render free tier)
 - **LLM**: Gemini 2.5 Flash via `emergentintegrations` + Emergent Universal LLM Key
 - **PDF gen**: ReportLab
 - **Email**: Resend (graceful 503 when unconfigured) — PDF attachments + password-reset
@@ -20,7 +20,7 @@ Extend a procurement web app to support: (1) automated document processing (OCR 
 - **Viewer** — read-only
 
 ## Services
-`ocr_service · classification_service · extraction_service · templates · pdf_service · email_service · audit_service · auth_service · celery_app`
+`ocr_service · gemini_pdf_service · classification_service · extraction_service · templates · pdf_service · email_service · audit_service · auth_service · storage_service · celery_app`
 
 ## API (all under `/api`)
 - **Auth**: `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`, `/auth/refresh`, `/auth/forgot-password`, `/auth/reset-password`
@@ -57,7 +57,10 @@ PO, PR, DO, QUOTATION, INVOICE — plus any admin-defined custom types (e.g. PAC
 - **P2** Multi-page PDF preview zoom controls
 - **P3** Persistent Celery worker loop/Mongo client for throughput
 - **P3** Outbound webhooks (on_document_final → Slack/Teams)
-- **P3** Scanned-PDF OCR language packs + per-page progress
+
+## Changelog
+- **2026-04-25** Replaced tesseract+pdf2image OCR fallback with **Gemini 2.5 Flash PDF understanding**. Eliminates ~350MB native deps (poppler, libtesseract), drops worker peak RAM from ~400MB → ~50MB. Resolves Render free-tier OOM-induced "connection refused" outage on bulk uploads. Dockerfile slimmed accordingly.
+- **2026-04-25** Tightened mobile/tablet "Original PDF" card on Review.jsx (smaller padding + icon + button + truncation) — removes wasted vertical/horizontal whitespace below the `lg` breakpoint.
 
 ## Credentials
 Seed admin: `syazwan.zulkifli@quatriz.com.my` / `Admin@123` (see `/app/memory/test_credentials.md`).
