@@ -94,6 +94,7 @@ class DocumentModel(BaseModel):
     ocr_method: Optional[str] = None
     extracted_data: Dict[str, Any] = Field(default_factory=dict)
     extraction_error: Optional[str] = None
+    extraction_provider: Optional[str] = None
     owner_id: Optional[str] = None
     owner_email: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -581,7 +582,7 @@ async def _run_pipeline(doc_id: str) -> None:
         raw_text, ocr_method = extract_text_from_pdf(file_path)
         doc_type, confidence, method = await classify(raw_text)
         try:
-            extracted = await extract_structured(doc_type, raw_text)
+            extracted, used_provider = await extract_structured(doc_type, raw_text)
         except ExtractionError as exc:
             # LLM step failed (budget, rate-limit, parse error). Persist what
             # we already computed (raw_text + classification) so the user can
@@ -613,6 +614,7 @@ async def _run_pipeline(doc_id: str) -> None:
                 "classification_method": method,
                 "ocr_method": ocr_method,
                 "extracted_data": extracted,
+                "extraction_provider": used_provider,
                 "status": "EXTRACTED",
                 "updated_at": now,
             }, "$unset": {"extraction_error": ""}},

@@ -60,7 +60,7 @@ def process_document_task(self, doc_id: str) -> str:  # noqa: ARG001
             raw_text, ocr_method = extract_text_from_pdf(file_path)
             doc_type, confidence, method = await classify(raw_text)
             try:
-                extracted = await extract_structured(doc_type, raw_text)
+                extracted, used_provider = await extract_structured(doc_type, raw_text)
             except ExtractionError as exc:
                 await db.documents.update_one(
                     {"id": doc_id},
@@ -86,6 +86,7 @@ def process_document_task(self, doc_id: str) -> str:  # noqa: ARG001
                     "classification_method": method,
                     "ocr_method": ocr_method,
                     "extracted_data": extracted,
+                    "extraction_provider": used_provider,
                     "status": "EXTRACTED",
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }, "$unset": {"extraction_error": ""}},

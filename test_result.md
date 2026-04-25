@@ -102,9 +102,21 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Switch LLM extraction off the paid Emergent Universal Key (which kept exhausting its $0.40 budget) onto the free Google Gemini direct API tier. Keep the defensive UX (FAILED status + extraction_error banner + Retry button) when the LLM call fails."
+user_problem_statement: "Build a multi-provider LLM fallback chain (Gemini direct → Groq → Emergent) so a single provider outage / quota / bad key never blocks extraction. Surface the provider that succeeded as a small badge on the Review page."
 
 frontend:
+  - task: "Provider-used badge on Review page"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/Review.jsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Added a small blue uppercase badge (data-testid='review-provider-badge') in the Review page header next to the confidence indicator that shows doc.extraction_provider when set ('gemini-direct', 'groq', or 'emergent'). Hidden on small screens (md:inline). Tooltip explains it's the LLM that produced the extraction. Not requesting frontend testing — visual addition only, will verify on the next deployment."
+
   - task: "Review page extraction-error banner with Retry"
     implemented: true
     working: "NA"
@@ -227,6 +239,18 @@ frontend:
           comment: "Tested on 2026-04-25. After logout, both access_token and refresh_token cookies are absent. Only Cloudflare cookies (cf_clearance, __cf_bm) remain. Cookie cleanup working correctly."
 
 backend:
+  - task: "Multi-provider LLM fallback (Gemini → Groq → Emergent) with provider tracking"
+    implemented: true
+    working: true
+    file: "backend/services/extraction_service.py, backend/server.py, backend/celery_app.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Refactored extract_structured to walk a provider chain: GEMINI_API_KEY (google-genai SDK, response_mime_type=application/json), then GROQ_API_KEY (httpx POST to https://api.groq.com/openai/v1/chat/completions, llama-3.3-70b-versatile, response_format=json_object), then EMERGENT_LLM_KEY (legacy). Each provider is tried in order; failures (auth, rate-limit, parse error) are logged via _try_provider helper, and we fall through. Final ExtractionError surfaces the LAST tier's friendly classified message via the banner. Function now returns (payload, provider_name) tuple. server.py + celery_app.py updated to receive the tuple and persist extraction_provider on the document. DocumentModel has extraction_provider: Optional[str]. Smoke-tested: (a) real Gemini key returns gemini-direct as provider; (b) bad Gemini + exhausted Emergent walks the chain and returns the budget-exhausted message correctly. Awaiting Groq key from user to test the middle tier explicitly."
+
   - task: "Switch LLM extraction to free Google Gemini direct (google-genai SDK)"
     implemented: true
     working: true

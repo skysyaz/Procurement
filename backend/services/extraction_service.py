@@ -1,10 +1,15 @@
 """LLM-driven structured extraction.
 Maps raw OCR text into the per-template JSON schema.
 
-Uses Google Gemini directly via the official ``google-genai`` SDK (free tier,
-generous quotas) when ``GEMINI_API_KEY`` is configured.  Falls back to the
-Emergent Universal Key (paid, budgeted) when only ``EMERGENT_LLM_KEY`` is
-available — that path remains so existing deployments keep working.
+Multi-provider fallback chain (highest priority first):
+  1. Google Gemini direct (``GEMINI_API_KEY``) — free tier, ~1500 RPD.
+  2. Groq (``GROQ_API_KEY``) — free tier, llama-3.3-70b-versatile.
+  3. Emergent Universal Key (``EMERGENT_LLM_KEY``) — paid, budgeted.
+
+Each tier is tried in order; if one fails we move on so a single provider
+outage / quota / bad key never blocks extraction. The function returns the
+parsed payload AND the name of the provider that actually succeeded so the
+Review page can surface "Extracted by: gemini-direct".
 """
 from __future__ import annotations
 
@@ -14,7 +19,9 @@ import logging
 import os
 import re
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
+
+import httpx
 
 from .templates import get_template
 
@@ -36,6 +43,8 @@ except Exception:  # noqa: BLE001
 
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 
 
 def _schema_hint(document_type: str) -> str:
@@ -223,6 +232,39 @@ async def _call_gemini_direct(
     return await asyncio.to_thread(_invoke)
 
 
+async def _call_groq_direct(
+    document_type: str, snippet: str, api_key: str
+) -> str:
+    """Invoke Groq via its OpenAI-compatible REST endpoint.
+
+    Uses ``response_format={"type": "json_object"}`` which constrains the
+    model to emit valid JSON. Free tier (~14400 RPD on llama-3.3-70b) is
+    plenty for normal procurement workloads.
+    """
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": _system_prompt(document_type)},
+            {"role": "user", "content": f"OCR TEXT:\n{snippet}"},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 4096,
+        "response_format": {"type": "json_object"},
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(GROQ_ENDPOINT, json=payload, headers=headers)
+        resp.raise_for_status()
+        body = resp.json()
+    try:
+        return body["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Unexpected Groq response shape: {body!r}") from exc
+
+
 async def _call_emergent_fallback(
     document_type: str, snippet: str, api_key: str
 ) -> str:
@@ -240,51 +282,91 @@ async def _call_emergent_fallback(
     return await chat.send_message(UserMessage(text=f"OCR TEXT:\n{snippet}"))
 
 
-async def extract_structured(document_type: str, raw_text: str) -> Dict[str, Any]:
+async def _try_provider(
+    name: str, raw_caller, document_type: str, snippet: str, api_key: str,
+) -> Dict[str, Any] | None:
+    """Run one provider and return parsed JSON, or None if it failed.
+
+    Errors are logged but not raised so the caller can fall through to the
+    next provider in the chain.  Returns ``None`` on any failure (network,
+    auth, rate-limit, parse error).  Stores the last error message on the
+    function's ``last_error`` attribute so the caller can surface it.
+    """
+    _try_provider.last_error = None  # type: ignore[attr-defined]
+    try:
+        resp = await raw_caller(document_type, snippet, api_key)
+    except ExtractionError as exc:
+        logger.warning("%s skipped: %s", name, exc)
+        _try_provider.last_error = _classify_llm_error(exc)  # type: ignore[attr-defined]
+        return None
+    except Exception as exc:  # noqa: BLE001
+        friendly = _classify_llm_error(exc)
+        logger.warning("%s failed for %s: %s", name, document_type, exc)
+        _try_provider.last_error = friendly  # type: ignore[attr-defined]
+        return None
+
+    parsed = _safe_json_load(resp or "")
+    if not isinstance(parsed, dict):
+        logger.error("%s returned non-parseable JSON for %s: %s",
+                     name, document_type, (resp or "")[:200])
+        _try_provider.last_error = (  # type: ignore[attr-defined]
+            f"{name}: response could not be parsed as JSON."
+        )
+        return None
+    return parsed
+
+
+async def extract_structured(
+    document_type: str, raw_text: str
+) -> Tuple[Dict[str, Any], str]:
+    """Run extraction through the provider fallback chain.
+
+    Returns ``(payload, provider_name)`` so callers can record which provider
+    actually produced the data (surfaced on the Review page).  ``OTHER`` /
+    empty input short-circuits with the empty payload and provider="none".
+    """
     if document_type == "OTHER" or not raw_text:
-        return _empty_payload()
+        return _empty_payload(), "none"
 
     gemini_key = os.environ.get("GEMINI_API_KEY")
+    groq_key = os.environ.get("GROQ_API_KEY")
     emergent_key = os.environ.get("EMERGENT_LLM_KEY")
 
-    if not gemini_key and not emergent_key:
-        logger.warning("No LLM key configured (GEMINI_API_KEY/EMERGENT_LLM_KEY)")
+    if not (gemini_key or groq_key or emergent_key):
+        logger.warning("No LLM key configured (GEMINI_API_KEY/GROQ_API_KEY/EMERGENT_LLM_KEY)")
         raise ExtractionError(
             "Extraction failed: no LLM API key is configured on the server "
-            "(set GEMINI_API_KEY for the free Gemini tier, or EMERGENT_LLM_KEY).",
+            "(set GEMINI_API_KEY, GROQ_API_KEY, or EMERGENT_LLM_KEY).",
             kind="missing_key",
         )
 
     # Bound memory: the LLM SDK buffers the full response, so don't feed it
     # an enormous prompt.  12k chars covers virtually every quote/PO/invoice.
     snippet = (raw_text or "")[:12000]
-    provider = "gemini-direct" if gemini_key else "emergent"
 
-    try:
-        if gemini_key:
-            resp = await _call_gemini_direct(document_type, snippet, gemini_key)
-        else:
-            resp = await _call_emergent_fallback(document_type, snippet, emergent_key)
-    except ExtractionError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        # Network blips, rate limits, budget exhaustion, model errors, etc.
-        # Surface as ExtractionError so the pipeline marks doc FAILED and
-        # the Review banner can tell the user what went wrong.
-        friendly = _classify_llm_error(exc)
-        logger.warning("LLM call (%s) failed for %s: %s", provider, document_type, exc)
-        raise ExtractionError(friendly) from exc
+    # Provider fallback chain — tried in order; first successful one wins.
+    chain = []
+    if gemini_key:
+        chain.append(("gemini-direct", _call_gemini_direct, gemini_key))
+    if groq_key:
+        chain.append(("groq", _call_groq_direct, groq_key))
+    if emergent_key:
+        chain.append(("emergent", _call_emergent_fallback, emergent_key))
 
-    parsed = _safe_json_load(resp or "")
-    if not isinstance(parsed, dict):
-        logger.error(
-            "LLM (%s) returned non-parseable JSON for %s: %s",
-            provider, document_type, (resp or "")[:200],
-        )
-        raise ExtractionError(
-            "Extraction failed: LLM response could not be parsed as JSON. Click Retry to try again.",
-            kind="parse_error",
-        )
+    last_error = "All providers failed."
+    parsed: Dict[str, Any] | None = None
+    used_provider = ""
+    for name, caller, key in chain:
+        parsed = await _try_provider(name, caller, document_type, snippet, key)
+        if parsed is not None:
+            used_provider = name
+            logger.info("Extraction succeeded via %s for %s", name, document_type)
+            break
+        # Capture the last_error from _try_provider for the final message.
+        last_error = getattr(_try_provider, "last_error", last_error) or last_error
+
+    if parsed is None:
+        raise ExtractionError(last_error)
 
     parsed.setdefault("header", {})
     parsed.setdefault("items", [])
@@ -299,4 +381,4 @@ async def extract_structured(document_type: str, raw_text: str) -> Dict[str, Any
             hdr["quotation_number"] = hdr["reference_number"]
         parsed["header"] = hdr
 
-    return parsed
+    return parsed, used_provider

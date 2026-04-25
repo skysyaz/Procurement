@@ -111,6 +111,15 @@ export default function Review() {
               Confidence: {Math.round(doc.confidence_score * 100)}% · {doc.classification_method}
             </span>
           )}
+          {doc.extraction_provider && doc.extraction_provider !== "none" && (
+            <span
+              className="hidden md:inline text-[10px] uppercase tracking-[0.12em] font-semibold px-2 py-0.5 bg-[#EFF6FF] text-[#1D4ED8] border border-[#BFDBFE]"
+              title="The LLM provider that produced this extraction"
+              data-testid="review-provider-badge"
+            >
+              {doc.extraction_provider}
+            </span>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <select
