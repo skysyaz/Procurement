@@ -124,8 +124,25 @@ def set_auth_cookies(response, access: str, refresh: str) -> None:
 
 
 def clear_auth_cookies(response) -> None:
-    response.delete_cookie("access_token", path="/", httponly=True, secure=True, samesite="none")
-    response.delete_cookie("refresh_token", path="/", httponly=True, secure=True, samesite="none")
+    # NOTE: Starlette's `Response.delete_cookie()` (≤0.37) writes `expires` as the
+    # *current* timestamp instead of a date in the past, which some browsers
+    # (and curl) refuse to treat as a deletion — the cookie stays in the jar
+    # and the user appears to "auto-login" after a refresh post-logout.
+    # We therefore overwrite the cookie ourselves with `Max-Age=0` AND an
+    # explicit past `expires` value, matching the EXACT attributes used at
+    # `set_cookie()` time so the browser identifies it as the same cookie.
+    past = "Thu, 01 Jan 1970 00:00:00 GMT"
+    for name in ("access_token", "refresh_token"):
+        response.set_cookie(
+            name,
+            value="",
+            max_age=0,
+            expires=past,
+            path="/",
+            httponly=True,
+            secure=True,
+            samesite="none",
+        )
 
 
 def new_user_doc(email: str, password: str, name: str, role: str) -> dict:
