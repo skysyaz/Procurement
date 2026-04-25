@@ -577,7 +577,7 @@ async def _run_pipeline(doc_id: str) -> None:
     file_path, is_temp = located
     try:
         await db.documents.update_one({"id": doc_id}, {"$set": {"status": "PROCESSING"}})
-        raw_text, ocr_method = await extract_text_from_pdf(file_path)
+        raw_text, ocr_method = extract_text_from_pdf(file_path)
         doc_type, confidence, method = await classify(raw_text)
         extracted = await extract_structured(doc_type, raw_text)
         now = datetime.now(timezone.utc).isoformat()
