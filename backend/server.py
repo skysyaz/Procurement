@@ -35,6 +35,7 @@ from services.email_service import (
     is_configured as email_configured,
     send_password_reset_email,
     send_pdf_email,
+    send_new_user_notification,
 )
 from services.extraction_service import extract_structured, ExtractionError
 from services.ocr_service import extract_text_from_pdf
@@ -186,6 +187,15 @@ async def register(payload: RegisterPayload, response: Response, request: Reques
     access = create_access_token(doc["id"], doc["email"], doc["role"])
     refresh = create_refresh_token(doc["id"])
     set_auth_cookies(response, access, refresh)
+
+    # Notify admin of new registration (except self-registration as admin)
+    if role != "admin" and email_configured():
+        admin_email = os.environ.get("ADMIN_EMAIL", "").lower().strip()
+        if admin_email:
+            try:
+                send_new_user_notification(admin_email, email, payload.name)
+            except Exception as exc:
+                logger.warning("Failed to send new user notification: %s", exc)
 
     await log_from_user(
         db, doc,

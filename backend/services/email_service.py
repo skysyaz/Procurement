@@ -81,3 +81,35 @@ def send_password_reset_email(to: str, reset_url: str) -> dict:
         "subject": "Reset your ProcureFlow password",
         "html": html,
     })
+
+
+def send_new_user_notification(admin_email: str, new_user_email: str, new_user_name: str) -> dict:
+    """Notify admin when a new user registers."""
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        logger.warning("RESEND_API_KEY not configured - skipping admin notification")
+        return {"skipped": True}
+
+    import resend
+
+    resend.api_key = api_key
+    from_email = os.environ.get("RESEND_FROM_EMAIL", "ProcureFlow <onboarding@resend.dev>")
+
+    html = (
+        "<div style='font-family:IBM Plex Sans, Arial, sans-serif;font-size:14px;color:#0A0A0B;max-width:480px;margin:0 auto'>"
+        "<h2 style='font-family:Cabinet Grotesk, sans-serif;letter-spacing:-0.01em'>New User Registration</h2>"
+        f"<p>A new user has registered in ProcureFlow:</p>"
+        f"<ul style='list-style:none;padding:0;margin:16px 0'>"
+        f"<li><strong>Name:</strong> {new_user_name}</li>"
+        f"<li><strong>Email:</strong> {new_user_email}</li>"
+        f"</ul>"
+        f"<p style='color:#71717A;font-size:12px'>You can manage this user from the Admin Users page.</p>"
+        "<hr style='border:none;border-top:1px solid #E5E7EB;margin:18px 0'/>"
+        "<p style='color:#71717A;font-size:12px'>Sent via ProcureFlow</p>"
+        "</div>"
+    )
+    return resend.Emails.send({
+        "from": from_email, "to": [admin_email],
+        "subject": f"New user registered: {new_user_name}",
+        "html": html,
+    })
