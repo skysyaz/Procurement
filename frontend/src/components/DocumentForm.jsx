@@ -21,7 +21,9 @@ export default function DocumentForm({ template, value, onChange }) {
 
   const computeTotals = (newItems, withTax = includeTax) => {
     const amountKey = itemCols.find((c) => c.computed)?.key;
+    const hasSstCol = itemCols.some((c) => c.key === "sst");
     let subtotal = 0;
+    let sstTotal = 0;
     newItems.forEach((it) => {
       if (amountKey) {
         const comp = itemCols.find((c) => c.key === amountKey);
@@ -31,11 +33,15 @@ export default function DocumentForm({ template, value, onChange }) {
       }
       const val = Number(it[amountKey] || 0);
       subtotal += Number.isFinite(val) ? val : 0;
+      // Per-row SST
+      if (hasSstCol && it.sst) {
+        sstTotal += Number((val * taxRate).toFixed(2));
+      }
     });
     const tax = withTax ? Number((subtotal * taxRate).toFixed(2)) : 0;
-    const grand_total = Number((subtotal + tax).toFixed(2));
+    const grand_total = Number((subtotal + (withTax ? sstTotal : 0)).toFixed(2));
     const next = { ...totals, subtotal: Number(subtotal.toFixed(2)) };
-    if (totalsCfg.find((t) => t.key === "tax")) next.tax = withTax ? tax : 0;
+    if (totalsCfg.find((t) => t.key === "tax")) next.tax = withTax ? sstTotal : 0;
     if (totalsCfg.find((t) => t.key === "grand_total")) next.grand_total = grand_total;
     return { items: newItems, totals: next };
   };
@@ -129,7 +135,15 @@ export default function DocumentForm({ template, value, onChange }) {
                     <td className="tabular-nums text-[#71717A]">{idx + 1}</td>
                     {itemCols.map((c) => (
                       <td key={c.key}>
-                        {c.type === "textarea" ? (
+                        {c.type === "checkbox" ? (
+                          <input
+                            type="checkbox"
+                            checked={it[c.key] ?? false}
+                            onChange={(e) => updateItem(idx, c.key, e.target.checked)}
+                            className="w-4 h-4 accent-black"
+                            data-testid={`item-${idx}-${c.key}`}
+                          />
+                        ) : c.type === "textarea" ? (
                           <textarea
                             className="pf-input"
                             rows={2}
