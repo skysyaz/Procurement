@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import { Trash, Plus } from "@phosphor-icons/react";
 
 /**
@@ -17,8 +17,9 @@ export default function DocumentForm({ template, value, onChange }) {
   const header = value?.header || {};
   const items = value?.items || [];
   const totals = value?.totals || {};
+  const [includeTax, setIncludeTax] = useState(taxRate > 0);
 
-  const computeTotals = (newItems) => {
+  const computeTotals = (newItems, withTax = includeTax) => {
     const amountKey = itemCols.find((c) => c.computed)?.key;
     let subtotal = 0;
     newItems.forEach((it) => {
@@ -31,12 +32,18 @@ export default function DocumentForm({ template, value, onChange }) {
       const val = Number(it[amountKey] || 0);
       subtotal += Number.isFinite(val) ? val : 0;
     });
-    const tax = Number((subtotal * taxRate).toFixed(2));
+    const tax = withTax ? Number((subtotal * taxRate).toFixed(2)) : 0;
     const grand_total = Number((subtotal + tax).toFixed(2));
     const next = { ...totals, subtotal: Number(subtotal.toFixed(2)) };
-    if (totalsCfg.find((t) => t.key === "tax")) next.tax = tax;
+    if (totalsCfg.find((t) => t.key === "tax")) next.tax = withTax ? tax : 0;
     if (totalsCfg.find((t) => t.key === "grand_total")) next.grand_total = grand_total;
     return { items: newItems, totals: next };
+  };
+
+  const updateIncludeTax = (checked) => {
+    setIncludeTax(checked);
+    const rec = computeTotals(items.map(x => ({ ...x })), checked);
+    onChange({ ...value, items: rec.items, totals: rec.totals });
   };
 
   const updateHeader = (k, v) => onChange({ ...value, header: { ...header, [k]: v } });
@@ -158,7 +165,20 @@ export default function DocumentForm({ template, value, onChange }) {
 
       {totalsCfg.length > 0 && (
         <section>
-          <div className="pf-overline mb-3">Totals</div>
+          {taxRate > 0 && (
+            <div className="flex items-center gap-2 mb-3">
+              <input
+                type="checkbox"
+                id="include-tax"
+                checked={includeTax}
+                onChange={(e) => updateIncludeTax(e.target.checked)}
+                className="w-4 h-4 accent-black"
+              />
+              <label htmlFor="include-tax" className="text-sm text-[#52525B] cursor-pointer">
+                Include SST (8%)
+              </label>
+            </div>
+          )}
           <div className="ml-auto max-w-md border border-[#E5E7EB]">
             {totalsCfg.map((t) => (
               <div key={t.key} className="flex justify-between px-4 py-2 border-b border-[#F4F4F5] last:border-0">
