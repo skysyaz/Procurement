@@ -31,6 +31,7 @@ DEFAULT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 {"key": "quantity", "label": "Qty", "type": "number"},
                 {"key": "unit_cost", "label": "Unit Cost", "type": "number"},
                 {"key": "total_cost", "label": "Total", "type": "number", "computed": "quantity*unit_cost"},
+                {"key": "sst", "label": "SST", "type": "checkbox"},
             ],
             "totals": [
                 {"key": "subtotal", "label": "Subtotal"},
@@ -66,6 +67,7 @@ DEFAULT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 {"key": "quantity", "label": "Qty", "type": "number"},
                 {"key": "unit_rate", "label": "Unit Rate", "type": "number"},
                 {"key": "amount", "label": "Amount", "type": "number", "computed": "quantity*unit_rate"},
+                {"key": "sst", "label": "SST", "type": "checkbox"},
             ],
             "totals": [
                 {"key": "subtotal", "label": "Sub-Total Amount"},
@@ -157,6 +159,7 @@ DEFAULT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 {"key": "quantity", "label": "Qty", "type": "number"},
                 {"key": "unit_price", "label": "Unit Price", "type": "number"},
                 {"key": "amount", "label": "Amount", "type": "number", "computed": "quantity*unit_price"},
+                {"key": "sst", "label": "SST", "type": "checkbox"},
             ],
             "totals": [
                 {"key": "subtotal", "label": "Subtotal"},
@@ -213,7 +216,7 @@ def validate_schema(schema: Dict[str, Any]) -> Optional[str]:
     for key in ("header_fields", "item_columns", "totals"):
         if not isinstance(schema.get(key), list):
             return f"schema.{key} must be an array"
-    allowed_types = {"text", "textarea", "number", "date"}
+    allowed_types = {"text", "textarea", "number", "date", "checkbox"}
     for f in schema["header_fields"]:
         if not isinstance(f, dict) or not f.get("key") or not f.get("label"):
             return "each header_field needs key + label"
