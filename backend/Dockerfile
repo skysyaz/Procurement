@@ -24,7 +24,6 @@ COPY backend/requirements.txt ./
 # Install Python dependencies
 RUN pip install --upgrade pip setuptools wheel \
  && pip install --no-cache-dir -r requirements.txt \
- && pip install --no-cache-dir pytesseract pdf2image resend celery redis \
  && pip install --no-cache-dir --no-deps google-genai==1.71.0 \
  && pip install --no-cache-dir google-auth httpx websockets tenacity distro sniffio anyio
 
