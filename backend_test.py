@@ -3,7 +3,7 @@
 Backend testing for defensive ExtractionError flow.
 
 Tests:
-1. Missing EMERGENT_LLM_KEY causes ExtractionError with proper message
+1. Missing GEMINI_API_KEY/GROQ_API_KEY causes ExtractionError with proper message
 2. Document gets marked as FAILED with extraction_error populated
 3. Retry functionality works and clears extraction_error
 4. OTHER doc_type still works without errors
@@ -23,7 +23,7 @@ from reportlab.pdfgen import canvas
 
 
 # Test configuration
-BACKEND_URL = "https://budget-exceeded-fix.preview.emergentagent.com/api"
+BACKEND_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://localhost:8001").rstrip("/") + "/api"
 TEST_EMAIL = "syazwan.zulkifli@quatriz.com.my"
 TEST_PASSWORD = "Admin@123"
 

@@ -33,9 +33,12 @@ ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 
-SAMPLE_PDF_URL = (
-    "https://customer-assets.emergentagent.com/job_smart-procurement-31/"
-    "artifacts/4fp2xmmo_QUO_AFA_AD-HOC%20MAINTENANCE%20-%20GOM%2C%20T11.pdf"
+# Sample PDF: a real Quatriz quotation PDF used for integration testing.
+# Download it once and host it yourself, or use a local path override via
+# the SAMPLE_PDF_URL env var.
+SAMPLE_PDF_URL = os.environ.get(
+    "SAMPLE_PDF_URL",
+    "https://quatriz.com.my/sample_quotation.pdf",  # replace with your own host
 )
 
 TIMEOUT = 60

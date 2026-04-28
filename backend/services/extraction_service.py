@@ -4,7 +4,6 @@ Maps raw OCR text into the per-template JSON schema.
 Multi-provider fallback chain (highest priority first):
   1. Google Gemini direct (``GEMINI_API_KEY``) — free tier, ~1500 RPD.
   2. Groq (``GROQ_API_KEY``) — free tier, llama-3.3-70b-versatile.
-  3. Emergent Universal Key (``EMERGENT_LLM_KEY``) — paid, budgeted.
 
 Each tier is tried in order; if one fails we move on so a single provider
 outage / quota / bad key never blocks extraction. The function returns the
@@ -18,7 +17,6 @@ import json
 import logging
 import os
 import re
-import uuid
 from typing import Any, Dict, Tuple
 
 import httpx
@@ -34,12 +32,6 @@ try:  # google-genai is the preferred path (free tier).
 except Exception:  # noqa: BLE001
     _google_genai = None
     _google_genai_types = None
-
-try:  # Emergent universal key is the fallback path.
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
-except Exception:  # noqa: BLE001
-    LlmChat = None  # type: ignore
-    UserMessage = None  # type: ignore
 
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
@@ -107,14 +99,12 @@ class ExtractionError(RuntimeError):
 def _classify_llm_error(exc: Exception) -> str:
     """Convert a raw LLM SDK exception into a short, user-facing string.
 
-    Detects the common Emergent Universal Key budget-exhausted case so the
-    Review banner can tell the user exactly what happened (instead of a
-    silent empty form).
+    Converts a raw LLM SDK exception into a short, user-facing string.
     """
     msg = str(exc) or exc.__class__.__name__
     low = msg.lower()
     if "budget has been exceeded" in low or "max budget" in low:
-        return "LLM service budget exhausted — top up your API key (or switch to a free Gemini key) and click Retry."
+        return "LLM service budget exhausted — top up your API key and click Retry."
     if "quota" in low and ("exceed" in low or "exhaust" in low):
         return "LLM free-tier quota reached for the day — wait a bit and click Retry, or switch keys."
     if "rate limit" in low or "429" in low or "resource_exhausted" in low:
@@ -122,9 +112,7 @@ def _classify_llm_error(exc: Exception) -> str:
     if "timeout" in low or "timed out" in low:
         return "LLM service timed out — click Retry to try again."
     if "unauthorized" in low or "invalid api key" in low or "api_key_invalid" in low or "401" in low:
-        return "LLM service rejected the API key — check GEMINI_API_KEY (or EMERGENT_LLM_KEY) and click Retry."
-    # Generic fallback: keep the first 180 chars so logs stay useful but the
-    # banner isn't a wall of text.
+        return "LLM service rejected the API key — check GEMINI_API_KEY or GROQ_API_KEY and click Retry."
     return f"Extraction failed: {msg[:180]}"
 
 
@@ -265,23 +253,6 @@ async def _call_groq_direct(
         raise RuntimeError(f"Unexpected Groq response shape: {body!r}") from exc
 
 
-async def _call_emergent_fallback(
-    document_type: str, snippet: str, api_key: str
-) -> str:
-    """Invoke the Emergent Universal Key path (legacy/fallback)."""
-    if LlmChat is None or UserMessage is None:
-        raise ExtractionError(
-            "Extraction failed: emergentintegrations SDK is not installed.",
-            kind="missing_sdk",
-        )
-    chat = LlmChat(
-        api_key=api_key,
-        session_id=f"extract-{uuid.uuid4()}",
-        system_message=_system_prompt(document_type),
-    ).with_model("gemini", GEMINI_MODEL)
-    return await chat.send_message(UserMessage(text=f"OCR TEXT:\n{snippet}"))
-
-
 async def _try_provider(
     name: str, raw_caller, document_type: str, snippet: str, api_key: str,
 ) -> Dict[str, Any] | None:
@@ -330,13 +301,12 @@ async def extract_structured(
 
     gemini_key = os.environ.get("GEMINI_API_KEY")
     groq_key = os.environ.get("GROQ_API_KEY")
-    emergent_key = os.environ.get("EMERGENT_LLM_KEY")
 
-    if not (gemini_key or groq_key or emergent_key):
-        logger.warning("No LLM key configured (GEMINI_API_KEY/GROQ_API_KEY/EMERGENT_LLM_KEY)")
+    if not (gemini_key or groq_key):
+        logger.warning("No LLM key configured (GEMINI_API_KEY/GROQ_API_KEY)")
         raise ExtractionError(
             "Extraction failed: no LLM API key is configured on the server "
-            "(set GEMINI_API_KEY, GROQ_API_KEY, or EMERGENT_LLM_KEY).",
+            "(set GEMINI_API_KEY or GROQ_API_KEY).",
             kind="missing_key",
         )
 
@@ -350,8 +320,6 @@ async def extract_structured(
         chain.append(("gemini-direct", _call_gemini_direct, gemini_key))
     if groq_key:
         chain.append(("groq", _call_groq_direct, groq_key))
-    if emergent_key:
-        chain.append(("emergent", _call_emergent_fallback, emergent_key))
 
     last_error = "All providers failed."
     parsed: Dict[str, Any] | None = None

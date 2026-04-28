@@ -34,7 +34,8 @@ That's the only manual prep — Render handles the rest.
    | `MONGO_URL` | The connection string from MongoDB Atlas |
    | `ADMIN_EMAIL` | Your email (becomes the seeded admin user) |
    | `ADMIN_PASSWORD` | Strong password — change after first login |
-   | `EMERGENT_LLM_KEY` | `sk-emergent-…` (from your Emergent profile) |
+   | `GEMINI_API_KEY` | Your Google Gemini API key (get free key at https://aistudio.google.com) |
+   | `GROQ_API_KEY` | *(Optional)* Groq API key as fallback (get free at https://console.groq.com) |
 
    Leave these **blank** for now — we'll fill them in step 2:
    - `FRONTEND_URL`

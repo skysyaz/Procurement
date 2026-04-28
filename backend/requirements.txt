@@ -26,4 +26,3 @@ aiofiles==23.2.1
 pypdf==4.1.0
 reportlab==4.2.0
 # google-genai (installed separately; tight pydantic pin would conflict here)
-# emergentintegrations (installed separately, no broken pin)

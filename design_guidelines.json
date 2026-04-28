@@ -67,7 +67,6 @@
         "usage": "Use in header profile dropdown"
       },
       "empty_state_hero": {
-        "url": "https://static.prod-images.emergentagent.com/jobs/a8fcdd69-bb22-4616-8f20-5e80bc8f8a91/images/467c164ca55513801e6426a88ffc1e3690d5e1d8973406b077be24cfd56e3353.png",
         "alt": "Abstract geometric document processing graphic",
         "usage": "Use for the upload drag-drop zone or 'no documents found' empty states"
       }

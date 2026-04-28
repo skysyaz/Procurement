@@ -36,8 +36,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
- && pip install --no-cache-dir emergentintegrations \
-    --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/ \
  && pip install --no-cache-dir pytesseract pdf2image resend celery redis
 
 COPY backend/ ./
@@ -165,8 +163,10 @@ ADMIN_NAME=Administrator
 RESEND_API_KEY=
 RESEND_FROM_EMAIL=ProcureFlow <noreply@your-company.com>
 
-# Required for OCR classification + extraction (Emergent LLM key or own provider)
-EMERGENT_LLM_KEY=sk-emergent-xxxxxxxxxxxx
+# Required for OCR classification + extraction
+# At least one of the following must be set:
+GEMINI_API_KEY=AIza-xxxxxxxxxxxx
+GROQ_API_KEY=gsk_xxxxxxxxxxxx
 ```
 
 ### 2.6 Bring it up
@@ -208,8 +208,7 @@ cd /opt/procureflow/backend
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-pip install emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
-pip install pytesseract pdf2image resend celery redis
+pip install pytesseract pdf2image resend celery redis google-genai
 cp .env .env.prod          # edit with values from section 2.5
 
 # Frontend

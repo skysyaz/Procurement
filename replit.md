@@ -9,7 +9,7 @@ ProcureFlow is a full-stack procurement document management platform that automa
 - **Frontend**: React 19 + Tailwind CSS, built with CRACO (Create React App Configuration Override), served on port 5000
 - **Backend**: FastAPI (Python) + Motor (MongoDB async driver), served on port 8001
 - **Database**: MongoDB (local instance on port 27017)
-- **AI/LLM**: Gemini 2.5 Flash via `emergentintegrations` package for document classification and extraction
+- **AI/LLM**: Gemini 2.5 Flash (`google-genai` SDK) + Groq fallback for document classification and extraction
 - **PDF Generation**: ReportLab
 
 ## Project Structure
@@ -65,7 +65,7 @@ The app is started via `bash start.sh` which:
 - Frontend packages are in **root-level** `node_modules/` (react-scripts, craco, all deps)
 - Frontend's own `node_modules/` has some packages but react-scripts is removed to use root's
 - Python packages in `.pythonlibs/`
-- `emergentintegrations` installed from: https://d33sy5i8bnduwe.cloudfront.net/simple/
+- `google-genai` for Gemini (set `GEMINI_API_KEY`); `httpx` used directly for Groq (set `GROQ_API_KEY` for fallback)
 
 ## Default Admin Credentials
 

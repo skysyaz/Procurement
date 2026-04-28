@@ -8,7 +8,7 @@ Extend a procurement web app to support: (1) automated document processing (OCR 
 - **Queue**: Celery + Redis (supervised); in-process BackgroundTasks fallback when Redis unreachable
 - **Frontend**: React 19 + Tailwind + Phosphor (Cabinet Grotesk / IBM Plex Sans)
 - **OCR**: `pypdf` (digital) → Tesseract + `pdf2image` (scanned fallback)
-- **LLM**: Gemini 2.5 Flash via `emergentintegrations` + Emergent Universal LLM Key
+- **LLM**: Gemini 2.5 Flash via `google-genai` SDK (GEMINI_API_KEY) + Groq fallback (GROQ_API_KEY)
 - **PDF gen**: ReportLab
 - **Email**: Resend (graceful 503 when unconfigured) — PDF attachments + password-reset
 - **Auth**: JWT (httpOnly cookies + Bearer fallback), bcrypt, email-keyed brute-force lockout, admin seeded on startup
