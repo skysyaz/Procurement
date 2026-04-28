@@ -32,4 +32,6 @@ COPY backend/ ./
 RUN mkdir -p /app/uploads && chmod +x /app/start.sh
 
 EXPOSE 8001
-CMD ["/app/start.sh"]
+# Ensure scripts are executable
+RUN chmod +x /app/start.sh
+CMD ["/bin/sh", "/app/start.sh"]

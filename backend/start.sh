@@ -25,8 +25,8 @@ PORT="${PORT:-8001}"
 # Bound glibc memory fragmentation for both uvicorn AND celery worker
 export MALLOC_ARENA_MAX=2
 
-# Background: Celery worker
-celery -A celery_app.celery worker \
+# Background: Celery worker (only start if Redis/broker is reachable)
+python -m celery -A celery_app.celery worker \
   --loglevel=info \
   --concurrency=1 \
   --prefetch-multiplier=1 \
@@ -35,4 +35,4 @@ celery -A celery_app.celery worker \
   --without-gossip --without-mingle --without-heartbeat &
 
 # Foreground: FastAPI / Uvicorn
-exec uvicorn server:app --host 0.0.0.0 --port "${PORT}"
+exec python -m uvicorn server:app --host 0.0.0.0 --port "${PORT}"
